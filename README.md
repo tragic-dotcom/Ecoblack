@@ -1,4 +1,4 @@
-# ⚡ EcoBlack V13 — GitHub + Render + MongoDB Atlas
+# ⚡ EcoBlack V13 did
 
 Este paquete está preparado para subir a GitHub y desplegar una aplicación Flask en Render usando MongoDB Atlas como base de datos persistente. **No incluye `ecoblack.db` ni secretos**.
 
