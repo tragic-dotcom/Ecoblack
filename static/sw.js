@@ -1,4 +1,4 @@
-const CACHE = 'ecoblack-deploy-v13-202610';
+const CACHE = 'ecoblack-deploy-v17-map-admin-themes';
 const APP_SHELL = [
   '/',
   '/static/css/style.css',

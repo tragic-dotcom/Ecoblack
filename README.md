@@ -1,118 +1,88 @@
-# ⚡ EcoBlack V13 did
+# EcoBlack V17 — reparación del mapa y temas del panel administrador
 
-Este paquete está preparado para subir a GitHub y desplegar una aplicación Flask en Render usando MongoDB Atlas como base de datos persistente. **No incluye `ecoblack.db` ni secretos**.
+EcoBlack conserva su estructura Flask. En Render, `app.py` selecciona MongoDB Atlas mediante `MONGODB_URI`; en local, si esa variable no existe, usa SQLite.
 
-## Qué se incluye
+## Acceso por plan
 
-- `app.py`: punto de entrada. En Render selecciona MongoDB Atlas usando `MONGODB_URI`; sin esa variable, funciona localmente con SQLite.
-- `app_mongo.py`: backend MongoDB Atlas con usuarios, módulos, paquetes, sesiones activas, saldos, ingresos del administrador y descuentos.
-- `app_sqlite.py`: backend SQLite local para desarrollo.
-- `templates/` y `static/`: interfaz EcoBlack V13 completa.
-- `requirements.txt`: Flask, PyMongo y Gunicorn.
-- `render.yaml`: configuración Blueprints de Render.
-- `migrate_sqlite_to_mongo.py`: importación opcional de datos de un `ecoblack.db` local existente.
-- `.gitignore` y `.env.example`: ayudan a evitar que subas datos/secretos.
+- Cada cuenta nueva comienza **Sin plan**. La tarjeta de inicio muestra el plan actual y el estado de acceso.
+- Una cuenta normal debe comprar un plan antes de iniciar una carga. Puede consultar el mapa y los servicios, pero el servidor rechaza conexiones sin un plan activo.
+- Los planes **Básico, Rápido, Power y Personalizado** incluyen una sesión. Se pagan antes de conectar; al iniciar esa sesión, el plan se consume y vuelve a quedar la cuenta en **Sin plan**.
+- No se vuelve a descontar saldo al conectar una sesión que ya fue comprada.
+- Una cuenta no puede comprar otro plan estándar mientras conserve uno listo para usar.
+- El servidor verifica el plan vigente y el tipo de módulo en cada conexión. No basta con cambiar el selector del navegador.
 
-## A. Crear la base de datos en MongoDB Atlas
+## Bmax Pro: acceso VIP exclusivo
 
-1. Entra a [MongoDB Atlas](https://cloud.mongodb.com/) y crea un proyecto y un cluster.
-2. En **Database Access**, crea un **Database User** con contraseña fuerte y permisos para leer/escribir en la base `ecoblack`. Este usuario de base de datos no es necesariamente tu usuario para iniciar sesión en la web de Atlas.
-3. En **Network Access**, permite las IP de salida de Render. Después de crear el servicio de Render, abre el servicio → **Connect** → **Outbound** y añade los rangos CIDR que Render muestre a la lista de acceso IP de Atlas. Para probar desde tu propia computadora, añade también tu IP pública.
-4. En el cluster pulsa **Connect → Drivers → Python** y copia el connection string `mongodb+srv://...`. No uses la contraseña de tu cuenta personal de Atlas.
-5. Si la contraseña del database user contiene caracteres especiales, usa el valor percent-encoded en la URI.
+- Bmax Pro solo se puede comprar desde su apartado limitado y solo puede utilizarse en módulos que tengan `module_type: "bmax"`.
+- Un plan normal no puede abrir un módulo Bmax. Bmax Pro tampoco puede abrir un módulo normal.
+- Hay 10 cupos iniciales. El precio inicial es **$99 MXN**, editable desde el panel de administrador.
+- Antes de confirmar, el usuario aparta un lugar durante **5 minutos**. El servidor libera los apartados vencidos y controla el inventario en Atlas para evitar sobreventas.
+- Al confirmar la compra, Bmax Pro queda permanente en la cuenta y el usuario puede realizar sesiones Bmax posteriores sin volver a comprar el plan.
+- Si no hay cupos, el servicio aparece como **Agotado**. El administrador puede aumentar o reducir el total, pero no por debajo de los cupos vendidos o apartados.
+- Bmax Pro tiene un límite máximo de paquete de **100 W**. La potencia efectiva es el menor valor entre el límite Bmax, la capacidad estimada del teléfono, la potencia registrada del módulo y el límite del conector.
+- La sesión estima el tiempo hasta 100% usando el porcentaje inicial y la capacidad del dispositivo. Cuando el navegador admite `navigator.getBattery()`, intenta leer la batería; si no, el usuario puede ajustarla manualmente.
 
-> Evita `0.0.0.0/0` como configuración permanente: permite intentar conexiones desde cualquier dirección IP. Atlas exige una lista de acceso IP y recomienda restringirla a orígenes confiables. Consulta la documentación oficial de [conexión de Atlas](https://www.mongodb.com/docs/atlas/connect-to-database-deployment/) y su [lista de acceso IP](https://www.mongodb.com/docs/atlas/security/ip-access-list/).
+## Módulos y mapa
 
-## B. Subir el proyecto a GitHub desde Windows
+- Desde **Administración → Añadir módulo**, el admin puede crear módulos EcoBlack normales o módulos `Bmax · negro / morado`.
+- Cada módulo nuevo requiere nombre, ciudad, estado y coordenadas. Usa **Elegir punto en el mapa** para fijar la posición; si pulsas **Añadir al mapa** sin coordenadas, la aplicación abre automáticamente el modo de selección para que no parezca que el botón no funciona. Escribe su ciudad/estado reales para que se agrupe correctamente.
+- Los módulos Bmax tienen carcasa negra y detalles violetas; cuando están ocupados muestran su halo especial.
+- Los módulos permanecen anclados a las coordenadas guardadas. El marcador no se desplaza por animaciones de escala cuando se acerca o aleja el mapa.
+- El mapa cambia de nivel de detalle: **vista regional/estatal** con nombre del estado y número de módulos; **vista de ciudad** con nombre de ciudad y conteo; y, al acercarse, **marcadores individuales** en su ubicación guardada.
+- El admin puede usar el botón **Ciudad/estado** para completar metadatos de módulos antiguos que todavía no tengan esos campos y **Reubicar** para corregir su posición exacta.
+- Para los módulos predeterminados de Cancún, la aplicación completa automáticamente `Cancún, Quintana Roo` en registros antiguos que no tengan esos valores. No reemplaza nombres geográficos que ya estén configurados.
 
-1. Descomprime este ZIP en una carpeta nueva, por ejemplo `C:\Users\TU_USUARIO\Downloads\EcoBlack-V13-Deploy`.
-2. Crea un repositorio vacío en [GitHub](https://github.com/new), por ejemplo `ecoblack-v13`. No marques la opción de añadir README porque este paquete ya tiene uno.
-3. Abre PowerShell dentro de la carpeta donde están directamente `app.py` y `requirements.txt`.
-4. Ejecuta:
+## Apariencia por plan y animación Bmax
 
-```powershell
-git init
-git add .
-git status
-git commit -m "EcoBlack V13 deploy"
-git branch -M main
-git remote add origin https://github.com/TU_USUARIO/ecoblack-v13.git
-git push -u origin main
-```
+- Cada plan cambia el color de acento de la interfaz y de los marcadores normales.
+- Bmax Pro aplica una apariencia VIP morada a toda la interfaz.
+- Al conectar un módulo Bmax aparece una animación exclusiva con núcleo luminoso, aura espectral violeta, niebla, destellos y anillos de energía. Respeta la preferencia de movimiento reducido del dispositivo.
 
-Cambia `TU_USUARIO` por tu nombre de GitHub. Revisa `git status` antes del commit: **no debe aparecer `ecoblack.db`, `.env` ni contraseñas**. Si Git dice que `git` no existe, instala Git for Windows y vuelve a abrir PowerShell.
+## Persistencia en MongoDB Atlas
 
-Si ya conectaste `origin` anteriormente, no vuelvas a ejecutar `git remote add origin`; usa `git remote -v` para revisarlo.
+La aplicación crea las colecciones e índices que necesita al iniciar. Bmax usa:
 
-## C. Desplegar con Render
+- `bmax_config`: cupos totales, vendidos, apartados y precio.
+- `bmax_reservations`: apartados temporales y su vencimiento.
+- `bmax_purchases`: compras y acceso permanente del usuario.
 
-Puedes usar el archivo `render.yaml` incluido:
+Los planes estándar guardan el plan activo y su estado en el documento del usuario (`active_plan`, `active_plan_status`, `active_plan_minutes` y campos de compra/consumo). Los módulos guardan `module_type`, `city` y `state`; el perfil admin puede guardar `admin_service_theme`. No hace falta crear estas colecciones o campos manualmente.
 
-1. Entra a [Render](https://dashboard.render.com/).
-2. Selecciona **New → Blueprint** y conecta el repositorio de GitHub `ecoblack-v13`.
-3. Render leerá `render.yaml`. Confirma el servicio `ecoblack`.
-4. En las variables del servicio, rellena los valores secretos que Render solicite:
+## Variables de entorno en Render
 
-| Variable | Qué poner |
-|---|---|
-| `MONGODB_URI` | La URI de conexión copiada de Atlas, completa y privada |
-| `MONGODB_DB` | `ecoblack` |
-| `SECRET_KEY` | Déjala generada por Render; no la publiques |
-| `ADMIN_USERNAME` | `tragic` |
-| `ADMIN_PASSWORD` | Una contraseña fuerte elegida por ti para el admin en producción |
+Conserva las variables actuales del servicio:
 
-`render.yaml` configura automáticamente:
+- `MONGODB_URI`: cadena de conexión de MongoDB Atlas.
+- `MONGODB_DB`: normalmente `ecoblack`.
+- `SECRET_KEY`: clave larga y aleatoria.
+- `ADMIN_USERNAME`: usuario administrador ya configurado.
+- `ADMIN_PASSWORD`: contraseña segura del administrador.
 
-- Build command: `pip install -r requirements.txt`
-- Start command: `gunicorn app:app --workers 1 --threads 4 --timeout 120`
-- Health check: `/healthz`
+No subas `.env`, contraseñas ni cadenas de MongoDB a GitHub. Esta versión no requiere cambiar `MONGODB_URI` ni `MONGODB_DB`.
 
-Render despliega los cambios cada vez que se suben commits a la rama vinculada. Documentación: [desplegar Flask en Render](https://render.com/docs/deploy-flask) y [servicios web](https://render.com/docs/web-services).
+## Pruebas recomendadas tras desplegar
 
-## D. Comprobar que está conectado
+1. Crea una cuenta normal y confirma que Inicio muestre **Sin plan**.
+2. Intenta conectar cualquier módulo sin comprar: el servidor debe rechazarlo.
+3. Compra un plan estándar, conecta un módulo normal y confirma que la sesión se incluye sin un segundo cargo; al comenzar, la cuenta debe volver a **Sin plan**.
+4. Intenta conectar un módulo Bmax con un plan estándar: debe rechazarlo.
+5. Compra Bmax Pro con una cuenta distinta, usando el apartado de 5 minutos, y confirma que se vea el acceso VIP morado.
+6. Con Bmax Pro, conecta un módulo Bmax: debe funcionar. Intenta conectar un módulo normal: debe rechazarlo.
+7. Prueba el mapa a escala estatal, de ciudad y de calle. Revisa nombres y conteos; abre un pin y confirma que la ubicación coincide con las coordenadas guardadas.
+8. Desde el admin, completa ciudad/estado de módulos antiguos, crea un módulo nuevo y confirma que persista en Atlas.
+9. Prueba dos cuentas intentando apartar el último cupo Bmax; solo una debe obtenerlo.
 
-Cuando finalice el despliegue, abre estas direcciones sustituyendo el dominio por el que Render te haya asignado:
+## Nota técnica sobre carga real
 
-- `https://TU-SERVICIO.onrender.com/healthz` — debe devolver `{"ok":true,"database":"connected"}`.
-- `https://TU-SERVICIO.onrender.com/` — muestra EcoBlack.
-- `https://TU-SERVICIO.onrender.com/api/modules` — devuelve módulos iniciales en JSON.
+Esta versión implementa planes, reservas, compras, autorizaciones, mapa y estimaciones dentro de la aplicación web. **No controla eléctricamente un cargador ni puede garantizar una carga física de 100 W o una batería al 100%** sin integrar el hardware, los protocolos de carga y telemetría real. La potencia y los minutos mostrados son estimaciones de software.
 
-La primera inicialización de un Atlas vacío crea el administrador y los módulos de demostración. En Render el administrador usa la contraseña definida en `ADMIN_PASSWORD`, no una contraseña publicada en el código. Si ya existe `tragic` en Atlas, cambiar esa variable **no cambia** la contraseña del usuario existente.
 
-## E. Si quieres conservar los datos de tu SQLite local
+## V17 · Reparación de mapa y panel admin
 
-El despliegue en Atlas empieza con su propia base de datos. Si tienes usuarios, módulos, sesiones o contabilidad que quieras importar:
-
-1. Haz una copia de seguridad de tu `ecoblack.db` local.
-2. Copia el archivo `ecoblack.db` **temporalmente** junto a `migrate_sqlite_to_mongo.py` en una copia local de esta carpeta. No lo subas a GitHub.
-3. Instala las dependencias en tu PC: `py -m pip install -r requirements.txt`.
-4. En PowerShell define la URI solo en esa terminal y ejecuta el migrador:
-
-```powershell
-$env:MONGODB_URI="PEGA_AQUI_TU_URI_DE_ATLAS"
-$env:MONGODB_DB="ecoblack"
-$env:ADMIN_USERNAME="tragic"
-py migrate_sqlite_to_mongo.py
-```
-
-5. Abre Atlas y verifica usuarios, módulos, sesiones e ingresos antes de volver a desplegar.
-
-El migrador no borra tu SQLite y conserva la contraseña del administrador creada en Atlas, para no reemplazarla por el hash local de demostración. Haz backup de Atlas antes de repetir una migración, porque los documentos con IDs coincidentes se reemplazan con los datos locales.
-
-## Probar en local
-
-Sin definir `MONGODB_URI`, la app usa SQLite local:
-
-```powershell
-py -m pip install -r requirements.txt
-py app.py
-```
-
-Visita `http://127.0.0.1:5000`. Cuenta de demostración local: `tragic` / `69`. En producción, usa la contraseña fuerte de `ADMIN_PASSWORD`.
-
-## Notas importantes
-
-- Atlas guarda usuarios, módulos, sesiones y recaudación; el hosting de Render puede recrear sus archivos locales, por eso la app en Render se dirige a Atlas.
-- La tarjeta permanece desactivada para cobros reales hasta que integres una pasarela bancaria. Efectivo sigue siendo pendiente hasta confirmación del admin.
-- Los paquetes y watts son límites de cálculo de la app; no pueden controlar la potencia física de un cargador sin integración de hardware.
-- Protege siempre `MONGODB_URI`, `ADMIN_PASSWORD`, `SECRET_KEY` y tu `ecoblack.db`. No los pegues en el chat ni dentro del código fuente.
+- El formulario ya no acepta coordenadas vacías ni el punto accidental `0, 0`; exige una ubicación real antes de guardar.
+- El admin puede reubicar módulos existentes desde el mapa, útil para corregir módulos guardados anteriormente en una esquina o con coordenadas incompletas.
+- Los módulos sin coordenadas válidas ya no generan pines fantasma ni agrupaciones falsas; aparecen marcados como `Ubicación pendiente` en el panel admin.
+- Al guardar un módulo, la app cambia primero a la vista del mapa, espera que el mapa esté visible/listo, lo redimensiona y centra el nuevo pin en sus coordenadas reales.
+- El panel de administrador inicia con tema vino. Se agregó un selector de vista para los temas Básico (verde), Rápido (azul), Power (naranja), Personalizado (turquesa) y Bmax Pro (violeta). La preferencia se guarda en el perfil del admin en Atlas/SQLite. El selector solo cambia el aspecto del panel admin, no cambia planes ni permisos de clientes.
+- Las validaciones se aplican tanto al backend MongoDB Atlas como al backend local SQLite.
+- Se corrigió el posicionamiento de MapLibre: el pin ahora usa un contenedor geográfico independiente del botón visual, de modo que las reglas CSS de animación no anulan la transformación de coordenadas del mapa.
