@@ -1,9 +1,9 @@
 const state = {
-  user: null, profile: null, modules: [], packages: [], currentPlan: null, devices: [], history: [], transactions: [], adminUsers: [], bmaxStatus: null, bmaxAdmin: null, bmaxTimer: null, bmaxBattery: null,
+  user: null, profile: null, modules: [], packages: [], currentPlan: null, welcomeCoupon: null, guestPackages: [], devices: [], history: [], transactions: [], adminUsers: [], bmaxStatus: null, bmaxAdmin: null, bmaxTimer: null, bmaxBattery: null,
   selectedModule: null, nearestModule: null, activeSession: null, lastEstimate: null,
   map: null, mapEngine: null, mapLoaded: false, mapVisible: false, mapMarkers: [], mapTileLayer: null,
-  mapFallbackTimer: null, mapErrorCount: 0, map3d: false, nativeBuilding3DLayers: [], adminPickMode: false, adminRelocateModuleId: null,
-  userLocation: null, userMarker: null, mapCenter: [-86.8515, 21.1619], sessionRaf: null, sessionTick: null,
+  mapFallbackTimer: null, mapErrorCount: 0, map3d: false, nativeBuilding3DLayers: [], adminPickMode: false, adminRelocateModuleId: null, mapIntroTarget: null, mapPickTarget: null, mapIntroActive: false, reverseGeocodeToken: 0,
+  userLocation: null, userMarker: null, mapCenter: [0, 20], sessionRaf: null, sessionTick: null,
   currentProfileName: '', connectionAnimationActive: false, connectionAnimationToken: 0, packageAnimationTimer: null,
 };
 
@@ -42,10 +42,10 @@ async function api(url, options={}) {
 }
 
 function setView(view){
-  if(view==='charge' && state.user?.role!=='admin' && !state.currentPlan){showToast('Primero compra un plan en Servicios para poder utilizar EcoBlack.','info');view='services';}
+  if(view==='charge' && state.user?.role!=='admin' && !state.currentPlan){showToast('Primero compra un plan en Paquetes para poder utilizar EcoBlack.','info');view='services';}
   document.querySelectorAll('.view').forEach(el=>el.classList.toggle('active-view',el.id===`view-${view}`));
   document.querySelectorAll('.nav').forEach(el=>el.classList.toggle('active',el.dataset.view===view));
-  const titles={home:'Encuentra energía cerca de ti',services:'Paquetes de servicio',charge:'Configurar una carga',profile:'Mi perfil',admin:'Administración EcoBlack'};
+  const titles={home:'Encuentra energía cerca de ti',services:'Paquetes EcoBlack',charge:'Configurar una carga',profile:'Mi perfil',admin:'Administración EcoBlack'};
   $('pageTitle').textContent=state.activeSession?`⚡ ${state.activeSession.module_name}`:(titles[view]||'EcoBlack');
   if(view==='home'&&state.mapVisible) requestAnimationFrame(resizeMap);
   if(view==='admin'&&state.user?.role==='admin'){loadAdminUsers().catch(e=>showToast(e.message,'error'));loadAdminRevenue().catch(e=>showToast(e.message,'error'));loadAdminBmax().catch(e=>showToast(e.message,'error'));}
@@ -53,14 +53,47 @@ function setView(view){
 }
 function showAuthPanel(panel){document.querySelectorAll('.auth-tab').forEach(el=>el.classList.toggle('active',el.dataset.authView===panel));$('loginPanel').classList.toggle('hidden',panel!=='login');$('registerPanel').classList.toggle('hidden',panel!=='register');$('authError').classList.add('hidden');}
 function showAuthError(message){$('authError').textContent=message;$('authError').classList.remove('hidden');}
-async function checkAuth(){const data=await api('/api/auth/me');if(data.authenticated){state.user=data.user;await enterApp();}else showLogin();}
-function showLogin(){document.body.classList.remove(...[...document.body.classList].filter(name=>name.startsWith('admin-theme-')));$('authScreen').classList.remove('hidden');$('app').classList.add('hidden');}
+async function checkAuth(){const data=await api('/api/auth/me');if(data.authenticated){state.user=data.user;await enterApp();}else await showGuest();}
+function showLogin(panel='login'){document.body.classList.remove(...[...document.body.classList].filter(name=>name.startsWith('admin-theme-')));$('guestScreen').classList.add('hidden');$('authScreen').classList.remove('hidden');$('app').classList.add('hidden');showAuthPanel(panel);}
+async function showGuest(){state.user=null;$('app').classList.add('hidden');$('authScreen').classList.add('hidden');$('guestScreen').classList.remove('hidden');document.body.classList.remove(...[...document.body.classList].filter(name=>name.startsWith('admin-theme-')));await loadGuestCatalog();const params=new URLSearchParams(location.search);if(params.get('crear-cuenta')==='1'){openGuestAuth('register');history.replaceState({},'',location.pathname);}}
+function openGuestAuth(panel='register'){showLogin(panel);}
+async function loadGuestCatalog(){
+  const grid=$('guestPackageGrid');if(grid)grid.innerHTML='<div class="guest-loading">Preparando paquetes de energía...</div>';
+  try{
+    const [catalog,offer]=await Promise.all([api('/api/public/packages'),api('/api/qr/offer')]);
+    state.guestPackages=catalog.packages||[];
+    if(offer.eligible){$('guestOfferBanner').classList.remove('hidden');$('guestOfferPackage').textContent=offer.package_name;$('guestOfferBase').textContent=money(offer.base_price_mxn);$('guestOfferFinal').textContent=money(offer.discounted_price_mxn);}
+    else $('guestOfferBanner').classList.add('hidden');
+    renderGuestPackages(catalog.bmax||{});
+  }catch(error){if(grid)grid.innerHTML=`<div class="guest-loading">No se pudieron cargar los paquetes. ${esc(error.message)}</div>`;}
+}
+function renderGuestPackages(bmax={}){
+  const grid=$('guestPackageGrid');if(!grid)return;
+  const symbols={basic:'◈',fast:'ϟ',power:'✦',custom:'⌘',bmax_pro:'♛'};
+  grid.innerHTML=(state.guestPackages||[]).map(pack=>{
+    const isBmax=pack.id==='bmax_pro';const price=Number(pack.price_mxn||0);const details=isBmax?`${Number(bmax.available_slots||0)} cupos disponibles`:(pack.id==='custom'?'10–120 min ajustables':`${pack.minutes} minutos`);
+    return `<article class="guest-package-card" data-package="${esc(pack.id)}"><div class="guest-package-top"><span class="guest-package-icon">${symbols[pack.id]||'ϟ'}</span><button class="guest-qr-button" data-package-qr="${esc(pack.id)}" title="Mostrar QR con 50% de descuento" aria-label="Mostrar QR de ${esc(pack.name)}"><svg viewBox="0 0 24 24" class="qr-mini-icon" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3z"/><path d="M14 14h3v3h-3zM19 14h2v2h-2zM18 19h3v2h-3zM14 19h2v2h-2z"/></svg></button></div><h3>${esc(pack.name)}</h3><div class="guest-package-price">${money(price)} <small>${isBmax?'/ acceso único':'/ sesión'}</small></div><p>${esc(pack.description)}</p><div class="guest-package-meta"><span>${details}</span><span>Hasta ${Number(pack.max_watts||0)} W</span></div><button class="guest-package-buy" data-guest-buy="${esc(pack.id)}">Crear cuenta para comprar ↗</button></article>`;
+  }).join('');
+}
+async function showPackageQr(packageId){
+  try{
+    const data=await api(`/api/qr/package/${encodeURIComponent(packageId)}`);
+    const pack=[...state.packages,...state.guestPackages].find(p=>p.id===packageId);
+    const names={basic:'Básico',fast:'Rápido',power:'Power',custom:'Personalizado',bmax_pro:'Bmax Pro'};
+    const packageName=pack?.name||names[packageId]||packageId;
+    $('packageQrTitle').textContent=`QR · ${packageName}`;
+    $('packageQrBenefit').textContent=`Escanea para conocer los beneficios de ${packageName}. Si todavía no tienes una cuenta EcoBlack, al crearla desde este QR recibirás 50% de descuento exclusivamente en este paquete.`;
+    $('packageQrImage').src=data.image;$('packageQrImage').dataset.packageId=packageId;$('packageQrUrl').value=data.url;$('packageQrModal').classList.remove('hidden');
+  }catch(error){showToast(error.message,'error');}
+}
 async function enterApp(){
-  $('authScreen').classList.add('hidden');$('app').classList.remove('hidden');
+  $('authScreen').classList.add('hidden');$('guestScreen').classList.add('hidden');$('app').classList.remove('hidden');
   state.user=state.user||{};$('userBadge').textContent=state.user.role==='admin'?`⚡ ${state.user.username} · ADMIN`:`@${state.user.username}`;
   $('adminNav').classList.toggle('hidden',state.user.role!=='admin');
   state.currentPlan=null;await loadProfile();await loadData();await loadModules();await loadPackages();await refreshActiveSession();applyPlanTheme();applyAdminServiceTheme();renderActivePlan();
   if(state.user.role==='admin'){await loadAdminUsers();await loadAdminRevenue();await loadAdminBmax();}
+  if(state.user?.role!=='admin'&&!state.currentPlan)setView('services');
+  if(state.user?.welcome_coupon&&!state.user.welcome_coupon.redeemed_at){setView('services');showToast(`¡Gracias por escanear! Tienes 50% de descuento en ${state.user.welcome_coupon.package_id==='bmax_pro'?'Bmax Pro':(state.packages.find(p=>p.id===state.user.welcome_coupon.package_id)?.name||'tu paquete')}.`,'success');}
   syncDeviceBatteryLevel().catch(()=>{});
 }
 
@@ -112,6 +145,7 @@ function renderTransactions(rows){$('transactionList').innerHTML=rows.length?row
 
 async function loadPackages(){
   const data=await api('/api/packages');state.packages=data.packages||[];state.bmaxStatus=data.bmax||state.bmaxStatus;state.currentPlan=data.current_plan||null;
+  state.welcomeCoupon=data.welcome_coupon||state.user?.welcome_coupon||null;
   if(!state.currentPlan&&state.bmaxStatus?.has_purchased)state.currentPlan={id:'bmax_pro',name:'Bmax Pro',minutes:0,max_watts:100,status:'active',permanent:true};
   state.user.balance=data.balance;state.user.discount_percent=data.discount_percent;state.user.active_plan=state.currentPlan?.id||null;
   if(state.profile){state.profile.balance=data.balance;state.profile.discount_percent=data.discount_percent;state.profile.active_plan=state.currentPlan?.id||null;}
@@ -170,7 +204,7 @@ async function changeAdminServiceTheme(theme){
 }
 function durationForPackage(pack=currentPackage()){if(pack.id==='bmax_pro')return 0;return pack.id==='custom'?Math.max(10,Math.min(120,parseInt($('customMinutes')?.value||pack.minutes,10)||pack.minutes)):pack.minutes;}
 function pricingForPackage(pack=currentPackage()){
-  const duration=durationForPackage(pack);const discount=Number(state.profile?.discount_percent??state.user?.discount_percent??pack.discount_percent??0);
+  const duration=durationForPackage(pack);const qrCoupon=state.welcomeCoupon||state.user?.welcome_coupon;const hasQrCoupon=qrCoupon?.package_id===pack.id&&!qrCoupon?.redeemed_at;const discount=hasQrCoupon?50:Number(state.profile?.discount_percent??state.user?.discount_percent??pack.discount_percent??0);
   const base=pack.id==='bmax_pro'?0:(pack.id==='custom'?duration:Number(pack.base_price??pack.price??15));return {duration,base,discount:pack.id==='bmax_pro'?0:discount,final:Math.round(base*(1-(pack.id==='bmax_pro'?0:discount)/100)*100)/100};
 }
 function renderPackages(){
@@ -180,7 +214,7 @@ function renderPackages(){
   const b=state.bmaxStatus||{available_slots:0,sold_out:true,price_mxn:99,total_slots:10,sold_count:0,reserved_count:0};
   const activeId=state.currentPlan?.id||(b.has_purchased?'bmax_pro':null);
   const isAdmin=state.user?.role==='admin';
-  const options=isAdmin?regular.map(p=>`<option value="${p.id}">${esc(p.name)} · ${p.minutes} min</option>`):activeId&&activeId!=='bmax_pro'?[`<option value="${activeId}">${esc(state.currentPlan?.name||activeId)} · plan comprado</option>`]:activeId==='bmax_pro'?['<option value="bmax_pro">Bmax Pro · VIP</option>']:['<option value="" selected disabled>Compra un plan en Servicios</option>'];
+  const options=isAdmin?regular.map(p=>`<option value="${p.id}">${esc(p.name)} · ${p.minutes} min</option>`):activeId&&activeId!=='bmax_pro'?[`<option value="${activeId}">${esc(state.currentPlan?.name||activeId)} · plan comprado</option>`]:activeId==='bmax_pro'?['<option value="bmax_pro">Bmax Pro · VIP</option>']:['<option value="" selected disabled>Compra un plan en Paquetes</option>'];
   if(isAdmin&&b.has_purchased)options.push('<option value="bmax_pro">Bmax Pro · VIP</option>');
   $('packageSelect').innerHTML=options.join('');
   if(activeId&&!isAdmin)$('packageSelect').value=activeId;
@@ -188,11 +222,12 @@ function renderPackages(){
   $('packageSelect').disabled=!activeId&&!isAdmin;
   const cards=regular.map(p=>{
     const price=pricingForPackage(p);let stateBadge='',button='';
+    const qrButton=`<button class="service-qr-button" data-package-qr="${p.id}" title="QR con 50% para nuevas cuentas" aria-label="Código QR de ${esc(p.name)}"><svg viewBox="0 0 24 24" class="qr-mini-icon" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3z"/><path d="M14 14h3v3h-3zM19 14h2v2h-2zM18 19h3v2h-3zM14 19h2v2h-2z"/></svg></button>`;
     if(activeId===p.id){stateBadge='<div class="service-badge plan-ready-badge">TU PLAN ACTIVO</div>';button=`<button class="primary glass-button full" data-select-package="${p.id}">Usar plan · elegir módulo</button>`;}
     else if(activeId){stateBadge='<div class="service-badge plan-locked-badge">BLOQUEADO POR PLAN ACTIVO</div>';button='<button class="outline-full glass-button full" disabled>Ya tienes otro plan activo</button>';}
     else if(isAdmin){button=`<button class="primary glass-button full" data-select-package="${p.id}">Seleccionar para prueba</button>`;}
     else{button=`<button class="primary glass-button full" data-buy-plan="${p.id}">Comprar ${esc(p.name)} · ${money(price.final)}</button>`;}
-    return `<article class="glass service-card ${p.id==='fast'?'recommended':''}" data-package-card="${p.id}">${stateBadge}${p.id==='fast'&&!stateBadge?'<div class="service-badge">POPULAR</div>':''}<div class="service-symbol-wrap"><div class="service-mini-orbit"></div><div class="service-symbol">${p.id==='power'?'✦':p.id==='fast'?'ϟ':'◈'}</div></div><h3>${esc(p.name)}</h3><div class="service-price">${money(price.final)} <small>/ sesión</small></div><p class="muted">${esc(p.description)}</p><ul><li>✓ ${p.id==='custom'?'10–120 min, ajustables':`Hasta ${p.minutes} min de sesión`}</li><li>✓ Límite del paquete: ${Number(p.max_watts||10)} W</li><li>✓ Se compra antes de conectar</li></ul>${button}</article>`;
+    return `<article class="glass service-card ${p.id==='fast'?'recommended':''}" data-package-card="${p.id}">${qrButton}${stateBadge}${p.id==='fast'&&!stateBadge?'<div class="service-badge">POPULAR</div>':''}<div class="service-symbol-wrap"><div class="service-mini-orbit"></div><div class="service-symbol">${p.id==='power'?'✦':p.id==='fast'?'ϟ':'◈'}</div></div><h3>${esc(p.name)}</h3><div class="service-price">${money(price.final)} <small>/ sesión</small></div>${state.welcomeCoupon?.package_id===p.id&&!state.welcomeCoupon?.redeemed_at?'<div class="qr-coupon-tag">50% DE DESCUENTO QR</div>':''}<p class="muted">${esc(p.description)}</p><ul><li>✓ ${p.id==='custom'?'10–120 min, ajustables':`Hasta ${p.minutes} min de sesión`}</li><li>✓ Límite del paquete: ${Number(p.max_watts||10)} W</li><li>✓ Se compra antes de conectar</li></ul>${button}</article>`;
   }).join('');
   let stateBadge='',action='';
   if(b.has_purchased||activeId==='bmax_pro'){stateBadge='<div class="service-badge bmax-active-badge">ACCESO VIP ACTIVO</div>';action='<button class="primary glass-button full" data-select-package="bmax_pro">Entrar a módulos Bmax ⚡</button><p class="bmax-card-foot">Acceso permanente ligado a tu cuenta. Bmax Pro solo conecta en módulos Bmax.</p>';}
@@ -201,7 +236,9 @@ function renderPackages(){
   else if(Number(b.available_slots)>0){stateBadge='<div class="service-badge">EDICIÓN LIMITADA</div>';action=`<button class="primary glass-button full" data-bmax-reserve>Apartar cupo 5 minutos</button><p class="bmax-card-foot">Aparta primero; confirma la compra con tu saldo EcoBlack para obtener acceso permanente.</p>`;}
   else{stateBadge='<div class="service-badge bmax-sold-badge">AGOTADO</div>';action='<button class="primary glass-button full" disabled>Agotado</button><p class="bmax-card-foot">No quedan cupos disponibles. Consulta más adelante.</p>';}
   const stats=`<div class="bmax-slot-line"><b>${Number(b.available_slots||0)}</b><span>cupos disponibles</span><small>${Number(b.sold_count||0)} vendidos · ${Number(b.reserved_count||0)} apartados</small></div>`;
-  const bmaxCard=`<article class="glass service-card bmax-service-card ${activeId==='bmax_pro'?'bmax-owned-card':''}" data-package-card="bmax_pro">${stateBadge}<div class="bmax-service-halo"></div><div class="service-symbol-wrap bmax-symbol-wrap"><div class="service-mini-orbit"></div><div class="service-symbol">ϟ</div></div><div class="bmax-kicker">LIMITED BLACK SECTOR · VIP</div><h3>Bmax Pro</h3><div class="service-price">${b.has_purchased?'ACTIVO':money(b.price_mxn)} <small>${b.has_purchased?'/ acceso permanente':'/ acceso único'}</small></div><p class="muted">Acceso exclusivo a módulos negros y morados. Sesiones sin límite fijo de tiempo, con potencia ajustada al dispositivo.</p><ul><li>✓ Tope del paquete: hasta 100 W</li><li>✓ Solo módulos Bmax negros / morados</li><li>✓ El tiempo se estima según batería y dispositivo</li><li>✓ Acceso permanente en tu cuenta</li></ul>${stats}${action}</article>`;
+  const bmaxQrButton=`<button class="service-qr-button bmax-qr-button" data-package-qr="bmax_pro" title="QR Bmax Pro con 50% para cuentas nuevas" aria-label="Código QR de Bmax Pro"><svg viewBox="0 0 24 24" class="qr-mini-icon" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3z"/><path d="M14 14h3v3h-3zM19 14h2v2h-2zM18 19h3v2h-3zM14 19h2v2h-2z"/></svg></button>`;
+  const bmaxDiscount=b.discount_percent>0?`<div class="qr-coupon-tag bmax-coupon-tag">50% DE DESCUENTO QR · ANTES ${money(b.base_price_mxn)}</div>`:'';
+  const bmaxCard=`<article class="glass service-card bmax-service-card ${activeId==='bmax_pro'?'bmax-owned-card':''}" data-package-card="bmax_pro">${bmaxQrButton}${stateBadge}<div class="bmax-service-halo"></div><div class="service-symbol-wrap bmax-symbol-wrap"><div class="service-mini-orbit"></div><div class="service-symbol">ϟ</div></div><div class="bmax-kicker">LIMITED BLACK SECTOR · VIP</div><h3>Bmax Pro</h3><div class="service-price">${b.has_purchased?'ACTIVO':money(b.price_mxn)} <small>${b.has_purchased?'/ acceso permanente':'/ acceso único'}</small></div>${bmaxDiscount}<p class="muted">Acceso exclusivo a módulos negros y morados. Sesiones sin límite fijo de tiempo, con potencia ajustada al dispositivo.</p><ul><li>✓ Tope del paquete: hasta 100 W</li><li>✓ Solo módulos Bmax negros / morados</li><li>✓ El tiempo se estima según batería y dispositivo</li><li>✓ Acceso permanente en tu cuenta</li></ul>${stats}${action}</article>`;
   $('serviceGrid').innerHTML=cards+bmaxCard;
   renderActivePlan();
 }
@@ -415,13 +452,13 @@ function clusterModulesForZoom(){
   if(level==='module')return {level,groups:[]};
   const buckets=new Map();
   for(const module of state.modules.filter(moduleHasValidLocation)){
-    const stateName=String(module.state||'').trim();const city=String(module.city||'').trim();
+    const stateName=String(module.state||'').trim();const city=String(module.city||'').trim();const country=String(module.country||'').trim();
     let key,label;
     if(level==='state'){
-      if(stateName){key=`state:${stateName.toLocaleLowerCase()}`;label=stateName;}
+      if(stateName){key=`state:${(country+'|'+stateName).toLocaleLowerCase()}`;label=stateName+(country?`, ${country}`:'');}
       else{const gx=Math.floor(Number(module.lng)/8),gy=Math.floor(Number(module.lat)/8);key=`state-grid:${gx}:${gy}`;label='Zona regional';}
     }else{
-      if(city){key=`city:${(city+'|'+stateName).toLocaleLowerCase()}`;label=city+(stateName?`, ${stateName}`:'');}
+      if(city){key=`city:${(country+'|'+stateName+'|'+city).toLocaleLowerCase()}`;label=[city,stateName,country].filter(Boolean).join(', ');}
       else{const gx=Math.floor(Number(module.lng)/.38),gy=Math.floor(Number(module.lat)/.38);key=`city-grid:${gx}:${gy}`;label='Zona local';}
     }
     if(!buckets.has(key))buckets.set(key,{key,label,level,members:[],latSum:0,lngSum:0});
@@ -445,9 +482,9 @@ function ensureMap(){
   if(window.maplibregl){
     try{
       state.mapEngine='maplibre';
-      state.map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/liberty',center:state.mapCenter,zoom:5.2,pitch:state.map3d?56:0,bearing:state.map3d?-18:0,antialias:true,maxPitch:75,attributionControl:true,renderWorldCopies:false});
+      state.map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/liberty',center:[0,20],zoom:1.25,pitch:state.map3d?56:0,bearing:state.map3d?-18:0,antialias:true,maxPitch:75,attributionControl:true,renderWorldCopies:false});
       state.map.addControl(new maplibregl.NavigationControl({visualizePitch:true}),'top-right');
-      state.map.on('load',()=>{state.mapLoaded=true;add3DBuildings();sync3DControl();resizeMap();fitMapToNetwork();renderMapMarkers();clearTimeout(state.mapFallbackTimer);$('mapFallback').classList.add('hidden');});
+      state.map.on('load',()=>{state.mapLoaded=true;add3DBuildings();sync3DControl();resizeMap();renderMapMarkers();clearTimeout(state.mapFallbackTimer);$('mapFallback').classList.add('hidden');if(!state.mapIntroTarget&&state.adminPickMode){if(state.mapPickTarget)centerMapOnTarget(state.mapPickTarget,8.8);else if(state.modules.some(moduleHasValidLocation))fitMapToNetwork();}});
       state.map.on('moveend',()=>{const c=state.map.getCenter();state.mapCenter=[c.lng,c.lat]});state.map.on('zoomend',renderMapMarkers);
       state.map.on('click',event=>handleMapPick(event.lngLat.lat,event.lngLat.lng));
       state.map.on('error',event=>{console.warn('MapLibre tile/style error',event?.error||event);state.mapErrorCount++;if(state.mapErrorCount>=6&&!state.mapLoaded)switchToLeafletMap();else if(state.mapErrorCount>=12&&state.mapLoaded)switchToLeafletMap();});
@@ -524,9 +561,9 @@ function switchToLeafletMap(){
 }
 function createLeafletMap(){
   if(!window.L){showMapFallback();return;}
-  state.mapEngine='leaflet';state.mapLoaded=true;state.map=L.map('map',{zoomControl:true,preferCanvas:true}).setView([state.mapCenter[1],state.mapCenter[0]],5.2);
+  state.mapEngine='leaflet';state.mapLoaded=true;state.map=L.map('map',{zoomControl:true,preferCanvas:true}).setView([20,0],1.25);
   state.mapTileLayer=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(state.map);sync3DControl();
-  let errors=0;state.mapTileLayer.on('tileerror',()=>{errors++;if(errors>=4){showMapFallback();}});state.map.on('moveend',()=>{const c=state.map.getCenter();state.mapCenter=[c.lng,c.lat]});state.map.on('zoomend',renderMapMarkers);state.map.on('click',event=>handleMapPick(event.latlng.lat,event.latlng.lng));fitMapToNetwork();renderMapMarkers();setTimeout(resizeMap,100);
+  let errors=0;state.mapTileLayer.on('tileerror',()=>{errors++;if(errors>=4){showMapFallback();}});state.map.on('moveend',()=>{const c=state.map.getCenter();state.mapCenter=[c.lng,c.lat]});state.map.on('zoomend',renderMapMarkers);state.map.on('click',event=>handleMapPick(event.latlng.lat,event.latlng.lng));renderMapMarkers();setTimeout(resizeMap,100);if(!state.mapIntroTarget&&state.adminPickMode){if(state.mapPickTarget)centerMapOnTarget(state.mapPickTarget,8.8);else if(state.modules.some(moduleHasValidLocation))fitMapToNetwork();}
 }
 function fitMapToNetwork(){
   if(!state.map||!state.mapLoaded)return;
@@ -555,24 +592,65 @@ function fitMapToNetwork(){
   }catch(error){console.warn('No se pudo ajustar el mapa a la red',error);}
 }
 
+let lastReverseGeocodeAt=0;
+async function reverseGeocodePlace(lat,lng){
+  // Only called after an admin explicitly picks a point. Cache approximate coordinates and throttle this tab.
+  const cacheKey=`ecoblack-geocode-v1:${Number(lat).toFixed(4)}:${Number(lng).toFixed(4)}`;
+  try{const cached=localStorage.getItem(cacheKey);if(cached){const parsed=JSON.parse(cached);if(parsed&&typeof parsed==='object')return parsed;}}catch(_){}
+  const wait=Math.max(0,1200-(Date.now()-lastReverseGeocodeAt));
+  if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
+  lastReverseGeocodeAt=Date.now();
+  const url=`https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&zoom=14&accept-language=es&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}`;
+  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),10000);
+  let response;
+  try{response=await fetch(url,{headers:{'Accept':'application/json'},referrerPolicy:'origin',signal:controller.signal});}
+  finally{clearTimeout(timeout);}
+  if(!response.ok)throw new Error(response.status===429?'El servicio de mapas está ocupado. Intenta de nuevo en un momento.':'No se pudo consultar el nombre de la ubicación.');
+  const data=await response.json();const address=data.address||{};
+  const city=address.city||address.town||address.village||address.municipality||address.hamlet||address.county||address.state_district||address.suburb||'';
+  const stateName=address.state||address.region||address.province||address.state_district||'';
+  const country=address.country||'';
+  if(!city&&!stateName&&!country)throw new Error('El mapa no devolvió ciudad ni país para este punto.');
+  const result={city,state:stateName,country,display_name:data.display_name||''};
+  try{localStorage.setItem(cacheKey,JSON.stringify(result));}catch(_){}
+  return result;
+}
+async function applyPlaceToModuleForm(lat,lng,token){
+  $('moduleCity').value='';$('moduleState').value='';$('moduleCountry').value='';
+  $('pickLocationStatus').textContent='Ubicación fijada · detectando ciudad y país…';
+  try{
+    const place=await reverseGeocodePlace(lat,lng);
+    if(token!==state.reverseGeocodeToken)return place;
+    $('moduleCity').value=place.city||'';$('moduleState').value=place.state||'';$('moduleCountry').value=place.country||'';
+    $('pickLocationStatus').textContent=[place.city,place.state,place.country].filter(Boolean).join(' · ')||`${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    return place;
+  }catch(error){
+    if(token===state.reverseGeocodeToken){$('pickLocationStatus').textContent='Coordenadas guardadas · completa ciudad y país manualmente si hace falta';showToast('Se guardaron las coordenadas, pero no se pudo identificar la dirección automáticamente. Puedes completarla manualmente.','info');}
+    return null;
+  }
+}
 async function handleMapPick(lat,lng){
   if(!state.adminPickMode||state.user?.role!=='admin')return;
   const fixedLat=Number(lat.toFixed(6)),fixedLng=Number(lng.toFixed(6));
   if(state.adminRelocateModuleId){
     const module=state.modules.find(item=>String(item.id)===String(state.adminRelocateModuleId));
     if(!module){state.adminRelocateModuleId=null;state.adminPickMode=false;showToast('No se encontró el módulo que deseas ubicar.','error');setView('admin');return;}
+    state.adminPickMode=false;state.adminRelocateModuleId=null;setView('admin');
+    const token=++state.reverseGeocodeToken;let place=null;
+    try{place=await reverseGeocodePlace(fixedLat,fixedLng);}catch(_){place=null;}
     try{
-      await api(`/api/modules/${encodeURIComponent(module.id)}`,{method:'PUT',body:JSON.stringify({...module,lat:fixedLat,lng:fixedLng,connectors:module.connectors})});
-      state.adminRelocateModuleId=null;state.adminPickMode=false;await loadModules();setView('admin');
-      showToast(`Ubicación de ${module.name} corregida.`, 'success');
+      await api(`/api/modules/${encodeURIComponent(module.id)}`,{method:'PUT',body:JSON.stringify({...module,lat:fixedLat,lng:fixedLng,city:place?.city||module.city,state:place?.state||module.state,country:place?.country||module.country,connectors:module.connectors})});
+      await loadModules();showToast(`Ubicación de ${module.name} corregida${place?.city?` · ${place.city}`:''}.`,'success');
     }catch(error){showToast(error.message,'error');}
     return;
   }
   $('moduleLat').value=fixedLat.toFixed(6);$('moduleLng').value=fixedLng.toFixed(6);
-  $('pickLocationStatus').textContent=`Punto seleccionado: ${fixedLat.toFixed(5)}, ${fixedLng.toFixed(5)}`;
-  state.adminPickMode=false;setView('admin');showToast('Ubicación elegida. Ahora guarda el módulo.','success');
+  const token=++state.reverseGeocodeToken;state.adminPickMode=false;state.mapPickTarget=null;setView('admin');
+  const place=await applyPlaceToModuleForm(fixedLat,fixedLng,token);
+  if(place)showToast(`Punto seleccionado: ${[place.city,place.country].filter(Boolean).join(' · ')||'ubicación detectada'}.`,'success');
 }
 function showMapFallback(){
+  $('mapIntroOverlay')?.classList.add('hidden');$('mapIntroOverlay')?.classList.remove('is-active','is-zooming');state.mapIntroActive=false;
   $('mapFallback').classList.remove('hidden');$('mapFallback').innerHTML=`<div><b>Mapa alternativo EcoBlack</b><span>El proveedor de mapas no responde. Los módulos siguen funcionando; revisa Internet y vuelve a intentar.</span><button id="retryMapBtn" class="secondary glass-button">Reintentar mapa</button><div class="fallback-module-list">${state.modules.map(m=>`<button data-focus-module="${esc(m.id)}">${esc(m.name)} · ${m.status==='busy'?'Ocupado':'Disponible'}</button>`).join('')}</div></div>`;
   $('retryMapBtn').addEventListener('click',retryMap);
 }
@@ -627,7 +705,86 @@ function focusMapAt(lng,lat,zoom=16){
   if(state.mapEngine==='maplibre'&&!state.mapLoaded){state.map.once('load',focus);return;}
   requestAnimationFrame(()=>setTimeout(focus,80));
 }
-function toggleMap(visible){state.mapVisible=visible;$('map').classList.toggle('hidden',!visible);$('mapPlaceholder').classList.toggle('hidden',visible);document.querySelector('.map-controls')?.classList.toggle('hidden',!visible);$('toggleMapBtn').textContent=visible?'Ocultar mapa':'Mostrar mapa';if(visible){ensureMap();setTimeout(()=>{resizeMap();renderMapMarkers();},130);}}
+function centerMapOnTarget(target,zoom=8.8){
+  if(!state.map||!target)return;
+  state.mapCenter=[target.lng,target.lat];
+  try{
+    if(state.mapEngine==='maplibre')state.map.flyTo({center:[target.lng,target.lat],zoom,duration:1450,essential:true});
+    else state.map.flyTo([target.lat,target.lng],zoom,{duration:1.45});
+  }catch(error){console.warn('No se pudo centrar el mapa para elegir módulo',error);}
+}
+function getBrowserLocation(silent=false,force=false){
+  if(state.userLocation&&!force)return Promise.resolve(state.userLocation);
+  if(!navigator.geolocation)return Promise.resolve(null);
+  return new Promise(resolve=>navigator.geolocation.getCurrentPosition(position=>{
+    state.userLocation={lat:position.coords.latitude,lng:position.coords.longitude};
+    state.mapCenter=[state.userLocation.lng,state.userLocation.lat];updateNearest();resolve(state.userLocation);
+  },error=>{if(!silent)showToast(error.code===1?'Permite la ubicación para centrar el mapa.':'No se pudo obtener tu ubicación.', 'info');resolve(null);},{enableHighAccuracy:true,timeout:8500,maximumAge:120000}));
+}
+function getNetworkFallbackTarget(){
+  const items=state.modules.filter(moduleHasValidLocation);
+  if(!items.length)return {lat:20,lng:0,zoom:1.8,label:'Vista global EcoBlack'};
+  const lat=items.reduce((sum,item)=>sum+Number(item.lat),0)/items.length;
+  const lng=items.reduce((sum,item)=>sum+Number(item.lng),0)/items.length;
+  return {lat,lng,zoom:Math.min(8,Math.max(4.8,12-Math.log2(Math.max(1,items.length)))),label:'Zona con cobertura EcoBlack'};
+}
+function waitForMapReady(){
+  if(state.mapLoaded||state.mapEngine==='leaflet')return Promise.resolve();
+  return new Promise(resolve=>{if(!state.map){resolve();return;}state.map.once('load',resolve);setTimeout(resolve,13000);});
+}
+function finishMapGlobeIntro(){
+  const overlay=$('mapIntroOverlay');if(!overlay||!state.mapIntroActive)return;
+  overlay.classList.add('is-leaving');state.mapIntroActive=false;
+  setTimeout(()=>{overlay.classList.add('hidden');overlay.classList.remove('is-active','is-zooming','is-leaving');overlay.setAttribute('aria-hidden','true');state.mapIntroTarget=null;},720);
+}
+function runMapGlobeFlight(target){
+  if(!state.map||!target)return;
+  const overlay=$('mapIntroOverlay');
+  const title=$('mapIntroTitle'),subtitle=$('mapIntroSubtitle');
+  const label=target.label||'Tu ubicación';if(title)title.textContent='Viajando hasta tu zona';if(subtitle)subtitle.textContent=label;
+  try{
+    if(state.mapEngine==='maplibre'){
+      state.map.stop();state.map.jumpTo({center:[0,18],zoom:1.2,pitch:0,bearing:0});
+      setTimeout(()=>{
+        if(overlay)overlay.classList.add('is-zooming');
+        state.map.flyTo({center:[target.lng,target.lat],zoom:target.zoom||10.2,pitch:0,bearing:0,duration:3600,curve:1.55,speed:.72,essential:true});
+        state.map.once('moveend',finishMapGlobeIntro);
+        setTimeout(finishMapGlobeIntro,4700);
+      },360);
+    }else{
+      state.map.setView([18,0],1,{animate:false});
+      setTimeout(()=>{if(overlay)overlay.classList.add('is-zooming');state.map.flyTo([target.lat,target.lng],target.zoom||10.2,{duration:3.6,easeLinearity:.18});setTimeout(finishMapGlobeIntro,4300);},360);
+    }
+    state.mapCenter=[target.lng,target.lat];
+    setTimeout(renderMapMarkers,3850);
+  }catch(error){console.warn('Globe intro failed',error);finishMapGlobeIntro();}
+}
+async function playMapGlobeIntro(){
+  const overlay=$('mapIntroOverlay');if(overlay){overlay.classList.remove('hidden','is-leaving','is-zooming');overlay.classList.add('is-active');overlay.setAttribute('aria-hidden','false');}
+  state.mapIntroActive=true;if($('mapIntroTitle'))$('mapIntroTitle').textContent='Conectando con tu ubicación';if($('mapIntroSubtitle'))$('mapIntroSubtitle').textContent='Buscando tu lugar en el mundo…';
+  let location=await getBrowserLocation(true);
+  let target;
+  if(location)target={...location,zoom:10.3,label:'Tu ubicación actual'};
+  else target=getNetworkFallbackTarget();
+  state.mapIntroTarget=target;ensureMap();
+  await waitForMapReady();
+  if(!state.mapLoaded&&state.mapEngine!=='leaflet'){finishMapGlobeIntro();return;}
+  runMapGlobeFlight(target);setTimeout(()=>{resizeMap();renderMapMarkers();},150);
+}
+function toggleMap(visible,options={}){
+  state.mapVisible=visible;$('map').classList.toggle('hidden',!visible);$('mapPlaceholder').classList.toggle('hidden',visible);document.querySelector('.map-controls')?.classList.toggle('hidden',!visible);$('toggleMapBtn').textContent=visible?'Ocultar mapa':'Explorar mapa';
+  if(!visible){const overlay=$('mapIntroOverlay');overlay?.classList.add('hidden');overlay?.classList.remove('is-active','is-zooming','is-leaving');state.mapIntroActive=false;return;}
+  if(options.intro===false){
+    state.mapIntroTarget=null;ensureMap();setTimeout(()=>{resizeMap();renderMapMarkers();if(!state.adminPickMode){if(state.mapEngine==='maplibre'&&state.map.getZoom()<2)state.map.flyTo({center:state.mapCenter,zoom:5.5,duration:900});else if(state.mapEngine==='leaflet'&&state.map.getZoom()<2)state.map.flyTo([state.mapCenter[1],state.mapCenter[0]],5.5);}},130);
+    if(state.adminPickMode){
+      getBrowserLocation(true).then(location=>{
+        const target=location?{lat:location.lat,lng:location.lng}:getNetworkFallbackTarget();
+        state.mapPickTarget=target;
+        return waitForMapReady().then(()=>{if(!state.mapIntroTarget)centerMapOnTarget(target,location?9.3:(target.zoom||5.5));});
+      }).catch(()=>{});
+    }
+  }else{playMapGlobeIntro().catch(error=>{console.warn(error);ensureMap();finishMapGlobeIntro();});}
+}
 function retryMap(){clearTimeout(state.mapFallbackTimer);try{state.map?.remove();}catch(_){}state.map=null;state.mapEngine=null;state.mapLoaded=false;state.mapErrorCount=0;$('mapFallback').classList.add('hidden');$('map').innerHTML='';ensureMap();}
 function sync3DControl(){
   const button=$('toggle3dBtn');if(!button)return;
@@ -652,7 +809,7 @@ function set3D(enabled){
   showToast(state.map3d?'Edificios 3D activados.':'Vista 2D activada.', 'success');
 }
 
-function locate(){if(!navigator.geolocation){showToast('Este navegador no permite geolocalización.','error');return;}navigator.geolocation.getCurrentPosition(pos=>{state.userLocation={lat:pos.coords.latitude,lng:pos.coords.longitude};updateNearest();if(state.mapVisible&&state.map){if(state.mapEngine==='maplibre')state.map.flyTo({center:[state.userLocation.lng,state.userLocation.lat],zoom:15,pitch:state.map3d?56:0,duration:1200});else state.map.setView([state.userLocation.lat,state.userLocation.lng],15);renderMapMarkers();}},()=>showToast('No se pudo obtener la ubicación; se usará Cancún como referencia.','error'),{enableHighAccuracy:true,timeout:10000,maximumAge:30000});}
+async function locate(){const location=await getBrowserLocation(false,true);if(!location){showToast('No se pudo obtener la ubicación. Revisa los permisos del navegador.','error');return;}if(state.mapVisible&&state.map){if(state.mapEngine==='maplibre')state.map.flyTo({center:[location.lng,location.lat],zoom:10.4,pitch:state.map3d?56:0,duration:1700,essential:true});else state.map.flyTo([location.lat,location.lng],10.4,{duration:1.7});renderMapMarkers();}showToast('Ubicación encontrada. El mapa se centrará en tu zona.','success');}
 function moneyForSelectedPackage(){return pricingForPackage(currentPackage());}
 function openModule(module){state.selectedModule=module;const distance=distanceKm(originPoint().lat,originPoint().lng,module.lat,module.lng);$('modalName').textContent=module.name;$('modalMeta').textContent=`${module.id} · ${module.module_type==='bmax'?'MÓDULO BMAX · ':''}${distance.toFixed(1)} km aprox.`;$('modalConnectors').innerHTML=[...(module.module_type==='bmax'?['BMAX · NÚCLEO VIOLETA']:[]),...(module.connectors||[])].map((c,i)=>`<span class="chip ${i===0&&module.module_type==='bmax'?'bmax-module-chip':''}">${esc(c)}</span>`).join('');$('modalPower').textContent=module.power;$('modalStatus').textContent=module.status==='busy'?'Ocupado':'Disponible';$('modalStatus').className=module.status==='busy'?'busy':'available';$('modalStatusTop').textContent=module.status==='busy'?'OCUPADO':'DISPONIBLE';$('modalStatusTop').className=`modal-status-top ${module.status==='busy'?'busy':'ok'} ${module.module_type==='bmax'?'bmax-module-status':''}`;
   const own=state.activeSession&&String(state.activeSession.module_id)===String(module.id);$('modalUse').classList.toggle('hidden',module.status!=='available'||!!state.activeSession);$('modalDisconnect').classList.toggle('hidden',!own);updateModalPrice();if(module.remaining_seconds){$('modalCountdown').classList.remove('hidden');updateModalCountdown(module.remaining_seconds);}else $('modalCountdown').classList.add('hidden');$('moduleModal').classList.remove('hidden');}
@@ -665,9 +822,9 @@ function updateModalPrice(){
   const plan=estimateCharging(selectedDevice(),Number($('batteryLevel')?.value||35),state.selectedModule||nearestAvailableModule());
   const hasPlan=state.user?.role==='admin'||!!state.currentPlan;const eligible=state.user?.role==='admin'||(state.currentPlan?.id==='bmax_pro'?state.selectedModule?.module_type==='bmax':state.currentPlan?.id!=='bmax_pro'&&state.selectedModule?.module_type!=='bmax');
   $('modulePrice').textContent=hasPlan?'Incluido':money(price.final);
-  $('modulePriceHint').textContent=!hasPlan?'Compra un plan en Servicios para poder conectar.':!eligible?'Este módulo requiere un plan distinto. Bmax Pro solo funciona en módulos Bmax.':`Sesión estimada ${plan.session_minutes} min · potencia efectiva ${plan.watts} W de un máximo de ${plan.package_max_watts} W. Incluida en ${state.currentPlan?.name||'tu acceso'}.`;
+  $('modulePriceHint').textContent=!hasPlan?'Compra un plan en Paquetes para poder conectar.':!eligible?'Este módulo requiere un plan distinto. Bmax Pro solo funciona en módulos Bmax.':`Sesión estimada ${plan.session_minutes} min · potencia efectiva ${plan.watts} W de un máximo de ${plan.package_max_watts} W. Incluida en ${state.currentPlan?.name||'tu acceso'}.`;
   $('modalUse').disabled=!!state.activeSession||state.selectedModule?.status==='busy'||!hasPlan||!eligible;
-  $('modalUse').textContent=!hasPlan?'Compra un plan en Servicios':!eligible?'No compatible con tu plan':'Conectar con plan activo ⚡';
+  $('modalUse').textContent=!hasPlan?'Compra un plan en Paquetes':!eligible?'No compatible con tu plan':'Conectar con plan activo ⚡';
 }
 
 function estimate(){updateEstimate();return state.lastEstimate||estimateCharging();}
@@ -703,7 +860,7 @@ function openCheckout(moduleId){
   const module=state.modules.find(m=>String(m.id)===String(moduleId))||state.selectedModule;
   if(!module)return;
   state.selectedModule=module;
-  if(state.user?.role!=='admin'&&!state.currentPlan){showToast('No tienes un plan activo. Compra uno en Servicios antes de conectar.','error');setView('services');return;}
+  if(state.user?.role!=='admin'&&!state.currentPlan){showToast('No tienes un plan activo. Compra uno en Paquetes antes de conectar.','error');setView('services');return;}
   if(state.user?.role!=='admin'&&((state.currentPlan.id==='bmax_pro'&&module.module_type!=='bmax')||(state.currentPlan.id!=='bmax_pro'&&module.module_type==='bmax'))){showToast(state.currentPlan.id==='bmax_pro'?'Bmax Pro solo se puede usar en módulos Bmax.':'Este módulo es exclusivo de Bmax Pro.','error');return;}
   if(state.activeSession){showToast('Ya tienes una sesión activa. Desconéctala primero.','error');return;}
   if(module.status==='busy'){showToast('Este módulo ya está ocupado. Elige otro.','error');return;}
@@ -734,7 +891,7 @@ async function confirmConnection(){
     state.connectionAnimationActive=true;
     $('activeSessionDock').classList.add('hidden');
     updateBalanceDisplay();closeCheckout();closeModal();
-    setView('home');toggleMap(true);
+    setView('home');toggleMap(true,{intro:false});
     if(state.mapEngine==='maplibre')state.map.flyTo({center:[module.lng,module.lat],zoom:16,pitch:state.map3d?56:0,duration:1000});
     else if(state.mapEngine==='leaflet')state.map.setView([module.lat,module.lng],16);
 
@@ -770,31 +927,32 @@ function renderAdminModules(){
   $('adminModuleList').innerHTML=state.modules.map(m=>{
     const isBmax=m.module_type==='bmax',located=moduleHasValidLocation(m);
     const coordinates=located?`${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}`:'<span class="module-location-missing">Ubicación pendiente</span>';
-    return `<div class="list-item admin-item ${isBmax?'admin-bmax-module':''} ${located?'':'admin-module-unlocated'}"><div><b>${esc(m.name)} ${isBmax?'<span class="admin-bmax-type">BMAX</span>':''}</b><div class="meta">${esc(m.city||'Ciudad sin asignar')}${m.state?' · '+esc(m.state):''} · ${coordinates} · ${esc(m.power)} · <span class="inline-status ${m.status}">${m.status==='available'?'Disponible':'Ocupado'}</span>${isBmax?' · Núcleo negro / violeta':''}</div></div><div class="admin-actions">${located?`<button class="glass-button" data-focus-module="${esc(m.id)}">Ver</button>`:''}<button class="glass-button" data-relocate-module="${esc(m.id)}" ${m.remaining_seconds?'disabled':''}>${located?'Reubicar':'Ubicar en mapa'}</button><button class="glass-button" data-edit-module-geo="${esc(m.id)}">Ciudad/estado</button><button class="glass-button" data-toggle-module="${esc(m.id)}" ${m.remaining_seconds?'disabled':''}>${m.status==='available'?'Ocupar':'Liberar'}</button><button class="glass-button danger-text" data-delete-module="${esc(m.id)}" ${m.remaining_seconds?'disabled':''}>Quitar</button></div></div>`;
+    return `<div class="list-item admin-item ${isBmax?'admin-bmax-module':''} ${located?'':'admin-module-unlocated'}"><div><b>${esc(m.name)} ${isBmax?'<span class="admin-bmax-type">BMAX</span>':''}</b><div class="meta">${esc(m.city||'Ciudad sin asignar')}${m.state?' · '+esc(m.state):''}${m.country?' · '+esc(m.country):''} · ${coordinates} · ${esc(m.power)} · <span class="inline-status ${m.status}">${m.status==='available'?'Disponible':'Ocupado'}</span>${isBmax?' · Núcleo negro / violeta':''}</div></div><div class="admin-actions">${located?`<button class="glass-button" data-focus-module="${esc(m.id)}">Ver</button>`:''}<button class="glass-button" data-relocate-module="${esc(m.id)}" ${m.remaining_seconds?'disabled':''}>${located?'Reubicar':'Ubicar en mapa'}</button><button class="glass-button" data-edit-module-geo="${esc(m.id)}">Ciudad/estado/país</button><button class="glass-button" data-toggle-module="${esc(m.id)}" ${m.remaining_seconds?'disabled':''}>${m.status==='available'?'Ocupar':'Liberar'}</button><button class="glass-button danger-text" data-delete-module="${esc(m.id)}" ${m.remaining_seconds?'disabled':''}>Quitar</button></div></div>`;
   }).join('')||'<div class="muted">No hay módulos.</div>';
 }
 async function addModule(){
   const name=$('moduleName').value.trim(),latText=$('moduleLat').value.trim(),lngText=$('moduleLng').value.trim();
-  const lat=Number.parseFloat(latText),lng=Number.parseFloat(lngText),city=$('moduleCity').value.trim(),stateName=$('moduleState').value.trim();
+  const lat=Number.parseFloat(latText),lng=Number.parseFloat(lngText),city=$('moduleCity').value.trim(),stateName=$('moduleState').value.trim(),country=$('moduleCountry').value.trim();
   const power=$('modulePower').value,status=$('moduleStatus').value,module_type=$('moduleType').value;
   const connectors=[...document.querySelectorAll('#connectorChecks input:checked')].map(input=>input.value);
-  if(!name||!city||!stateName){showToast('Completa nombre, ciudad y estado.','error');return;}
+  if(!name){showToast('Escribe el nombre del módulo.','error');return;}
   // If the admin presses Add before choosing coordinates, guide them straight
   // into map-pick mode instead of silently doing nothing.
   if(!latText||!lngText){
-    state.adminRelocateModuleId=null;state.adminPickMode=true;setView('home');toggleMap(true);
-    showToast('Toca el punto exacto en el mapa. Después volverás al formulario para guardar el módulo.','info');return;
+    state.adminRelocateModuleId=null;state.adminPickMode=true;setView('home');toggleMap(true,{intro:false});
+    showToast('Toca el punto exacto en el mapa. La ciudad, el estado y el país se completarán automáticamente.','info');return;
   }
+  if(!city||!stateName||!country){showToast('No se completó la dirección. Revisa ciudad, estado y país antes de guardar.','error');return;}
   if(!Number.isFinite(lat)||!Number.isFinite(lng)||lat < -90||lat > 90||lng < -180||lng > 180||(Math.abs(lat)<1e-9&&Math.abs(lng)<1e-9)){
     showToast('La ubicación no es válida. Elige un punto real en el mapa o corrige latitud y longitud.','error');return;
   }
   const button=$('addModuleBtn');button.disabled=true;button.textContent='Guardando módulo…';
   try{
-    const result=await api('/api/modules',{method:'POST',body:JSON.stringify({name,lat,lng,city,state:stateName,power,status,module_type,connectors})});
+    const result=await api('/api/modules',{method:'POST',body:JSON.stringify({name,lat,lng,city,state:stateName,country,power,status,module_type,connectors})});
     showToast(module_type==='bmax'?'Módulo Bmax añadido con diseño negro y violeta.':'Módulo añadido al mapa.','success');
-    $('moduleName').value='';$('moduleCity').value='';$('moduleState').value='';$('moduleLat').value='';$('moduleLng').value='';
+    $('moduleName').value='';$('moduleCity').value='';$('moduleState').value='';$('moduleCountry').value='';$('moduleLat').value='';$('moduleLng').value='';
     $('moduleType').value='standard';$('modulePower').value='30 W';$('pickLocationStatus').textContent='Sin punto seleccionado';
-    setView('home');toggleMap(true);
+    setView('home');toggleMap(true,{intro:false});
     await loadModules();
     focusMapAt(Number(result.module.lng),Number(result.module.lat),16);
   }catch(error){showToast(error.message,'error');}
@@ -803,9 +961,9 @@ async function addModule(){
 async function editModuleGeo(id){
   const module=state.modules.find(item=>String(item.id)===String(id));if(!module)return;
   const city=window.prompt('Ciudad del módulo:',module.city||'');if(city===null)return;
-  const stateName=window.prompt('Estado del módulo:',module.state||'');if(stateName===null)return;
-  if(!city.trim()||!stateName.trim()){showToast('La ciudad y el estado son necesarios para agrupar el mapa.','error');return;}
-  try{await api(`/api/modules/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({city:city.trim(),state:stateName.trim()})});showToast('Ciudad y estado actualizados.','success');await loadModules();}
+  const stateName=window.prompt('Estado del módulo:',module.state||'');if(stateName===null)return;const country=window.prompt('País del módulo:',module.country||'México');if(country===null)return;
+  if(!city.trim()||!stateName.trim()||!country.trim()){showToast('La ciudad, el estado y el país son necesarios para agrupar el mapa.','error');return;}
+  try{await api(`/api/modules/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify({city:city.trim(),state:stateName.trim(),country:country.trim()})});showToast('Ciudad, estado y país actualizados.','success');await loadModules();}
   catch(error){showToast(error.message,'error');}
 }
 async function deleteModule(id){try{await api(`/api/modules/${encodeURIComponent(id)}`,{method:'DELETE'});showToast('Módulo eliminado.','success');await loadModules();}catch(error){showToast(error.message,'error');}}
@@ -876,7 +1034,7 @@ async function saveProfilePhoto(file){if(!file)return;if(!file.type.startsWith('
 function imageToDataUrl(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error('No se pudo leer la imagen.'));reader.onload=()=>{const img=new Image();img.onerror=()=>reject(new Error('La imagen no se pudo abrir.'));img.onload=()=>{const scale=Math.min(1,512/Math.max(img.width,img.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL('image/jpeg',.78));};img.src=reader.result;};reader.readAsDataURL(file);});}
 async function addDevice(){const name=$('newDevice').value.trim(),batteryMah=Number($('newDeviceBattery').value),maxWatts=Number($('newDeviceWatts').value),connector=$('newDeviceConnector').value;if(!name){showToast('Escribe el nombre/modelo del celular.','error');return;}if(batteryMah<1000||batteryMah>30000||maxWatts<3||maxWatts>300){showToast('Revisa mAh y potencia W.','error');return;}const device={id:`${state.user.username}-device-${Date.now()}`,owner:state.user.username,name,batteryMah,maxWatts,connector};await dbPut('devices',device);state.devices=(await dbAll('devices')).filter(d=>d.owner===state.user.username).map(normalizeDevice);renderDevices();$('newDevice').value='';showToast('Celular añadido y listo para el cálculo.','success');}
 
-async function logout(){if(state.activeSession){const leave=confirm(`Tienes una sesión activa en ${state.activeSession.module_name}. ¿Desconectarla y cerrar sesión?`);if(!leave)return;await api(`/api/modules/${encodeURIComponent(state.activeSession.module_id)}/disconnect`,{method:'POST'});}await api('/api/auth/logout',{method:'POST'});state.user=null;state.profile=null;state.activeSession=null;stopChargingAnimation();hideSessionDock();if(state.map?.remove)state.map.remove();state.map=null;state.mapEngine=null;state.mapVisible=false;showLogin();showAuthPanel('login');}
+async function logout(){if(state.activeSession){const leave=confirm(`Tienes una sesión activa en ${state.activeSession.module_name}. ¿Desconectarla y cerrar sesión?`);if(!leave)return;await api(`/api/modules/${encodeURIComponent(state.activeSession.module_id)}/disconnect`,{method:'POST'});}await api('/api/auth/logout',{method:'POST'});state.user=null;state.profile=null;state.activeSession=null;stopChargingAnimation();hideSessionDock();if(state.map?.remove)state.map.remove();state.map=null;state.mapEngine=null;state.mapVisible=false;showGuest().catch(()=>showLogin('login'));}
 
 // Ambient yellow node network. Links naturally break when moving points drift apart.
 function bootNetworkBackground(){
@@ -914,7 +1072,33 @@ function bootNetworkBackground(){
 }
 
 // Energy intro: particles spiral into the logo, bolts rush inward and briefly orbit the core.
-function bootStorm(){const storm=$('storm');setInterval(()=>{if($('app').classList.contains('hidden')||document.visibilityState==='hidden')return;const count=Math.random()<.14?2:1;for(let n=0;n<count;n++){const bolt=document.createElement('div');bolt.className='falling-bolt';bolt.textContent=Math.random()<.2?'ϟ':'⚡';bolt.style.left=`${Math.random()*100}%`;bolt.style.animationDuration=`${2.3+Math.random()*4}s`;bolt.style.setProperty('--drift',`${(Math.random()-.5)*110}px`);storm.appendChild(bolt);setTimeout(()=>bolt.remove(),6800);}},1250);}
+function setCursorEffect(value){
+  const allowed=['violet','electric','gold','ice','off'];const effect=allowed.includes(value)?value:'violet';
+  [...document.body.classList].filter(name=>name.startsWith('cursor-effect-')).forEach(name=>document.body.classList.remove(name));
+  if(effect!=='violet')document.body.classList.add(`cursor-effect-${effect}`);
+  try{localStorage.setItem('ecoblack-cursor-effect',effect);}catch(_){}
+  if($('cursorEffectSelect'))$('cursorEffectSelect').value=effect;
+}
+function bootPointerTrail(){
+  const canvas=$('pointerTrailCanvas'),glow=$('pointerGlow'),reticle=$('pointerReticle');if(!canvas||!glow)return;
+  if(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches){setCursorEffect('off');return;}
+  const ctx=canvas.getContext('2d');if(!ctx)return;
+  const particles=[],ripples=[];let width=0,height=0,dpr=1,lastSpawn=0,raf=0,targetX=-100,targetY=-100,glowX=-100,glowY=-100,reticleX=-100,reticleY=-100;
+  const palette={violet:['#f4e9ff','#d1a7ff','#985dff','#ffffff'],electric:['#efffa6','#b7ff36','#6dffb0','#ffffff'],gold:['#fff0be','#ffbc53','#ff7a35','#ffffff'],ice:['#e3fbff','#91e9ff','#55b9ff','#ffffff'],off:[]};
+  const resize=()=>{dpr=Math.min(window.devicePixelRatio||1,1.7);width=window.innerWidth;height=window.innerHeight;canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);canvas.style.width=`${width}px`;canvas.style.height=`${height}px`;ctx.setTransform(dpr,0,0,dpr,0,0);};
+  const activeColors=()=>{const effect=(document.body.className.match(/cursor-effect-(violet|electric|gold|ice|off)/)||[])[1]||'violet';return palette[effect]||palette.violet;};
+  const spawn=(x,y,amount=3,burst=false)=>{const colors=activeColors();if(!colors.length)return;for(let i=0;i<amount&&particles.length<190;i++){const angle=(Math.PI*2*i/Math.max(1,amount))+(Math.random()-.5)*.8,speed=(burst?1.5:0.35)+Math.random()*(burst?3.5:1.9);particles.push({x:x+(Math.random()-.5)*7,y:y+(Math.random()-.5)*7,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-.2,life:1,decay:burst?.012+Math.random()*.012:.022+Math.random()*.018,size:burst?2+Math.random()*4:1.2+Math.random()*3.1,color:colors[Math.floor(Math.random()*colors.length)],rotation:Math.random()*Math.PI,twinkle:Math.random()*6.28});}};
+  const move=event=>{targetX=event.clientX;targetY=event.clientY;const now=performance.now();if(now-lastSpawn>8){spawn(targetX,targetY,event.pointerType==='touch'?2:4);lastSpawn=now;}if(!raf)raf=requestAnimationFrame(draw);};
+  const burst=event=>{targetX=event.clientX;targetY=event.clientY;spawn(targetX,targetY,24,true);ripples.push({x:targetX,y:targetY,r:5,life:1});if(!raf)raf=requestAnimationFrame(draw);};
+  function draw(){raf=0;ctx.clearRect(0,0,width,height);glowX+=(targetX-glowX)*.22;glowY+=(targetY-glowY)*.22;reticleX+=(targetX-reticleX)*.38;reticleY+=(targetY-reticleY)*.38;if(targetX>-50){glow.style.left=`${glowX}px`;glow.style.top=`${glowY}px`;if(reticle){reticle.style.left=`${reticleX}px`;reticle.style.top=`${reticleY}px`;}}
+    for(let i=ripples.length-1;i>=0;i--){const r=ripples[i];r.r+=2.1;r.life-=.035;if(r.life<=0){ripples.splice(i,1);continue;}ctx.beginPath();ctx.arc(r.x,r.y,r.r,0,Math.PI*2);ctx.strokeStyle=`rgba(221,190,255,${r.life*.55})`;ctx.lineWidth=1.3;ctx.shadowColor='#bd8bff';ctx.shadowBlur=14;ctx.stroke();}
+    for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx;p.y+=p.vy;p.vx*=.976;p.vy=p.vy*.976+.012;p.life-=p.decay;p.size*=.991;p.twinkle+=.14;if(p.life<=0){particles.splice(i,1);continue;}const alpha=Math.max(0,p.life),shine=.65+.35*Math.sin(p.twinkle);ctx.globalAlpha=alpha;ctx.strokeStyle=p.color;ctx.fillStyle=p.color;ctx.shadowColor=p.color;ctx.shadowBlur=8+shine*7;ctx.lineWidth=Math.max(.55,p.size*.32);ctx.beginPath();ctx.moveTo(p.x-p.vx*2.8,p.y-p.vy*2.8);ctx.lineTo(p.x,p.y);ctx.stroke();ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.rotation+p.life*.8);ctx.beginPath();ctx.moveTo(0,-p.size*1.9);ctx.lineTo(p.size*.55,0);ctx.lineTo(0,p.size*1.9);ctx.lineTo(-p.size*.55,0);ctx.closePath();ctx.fill();ctx.restore();}
+    ctx.globalAlpha=1;ctx.shadowBlur=0;if(particles.length||ripples.length)raf=requestAnimationFrame(draw);
+  }
+  resize();window.addEventListener('resize',resize,{passive:true});window.addEventListener('pointermove',move,{passive:true});window.addEventListener('pointerdown',burst,{passive:true});window.addEventListener('pointerleave',()=>{if(reticle)reticle.style.opacity='0';glow.style.opacity='0';});window.addEventListener('pointerenter',()=>{if(reticle)reticle.style.opacity='1';glow.style.opacity=''});
+  let saved='violet';try{saved=localStorage.getItem('ecoblack-cursor-effect')||'violet';}catch(_){}setCursorEffect(saved);
+}
+function bootStorm(){const storm=$('storm');setInterval(()=>{if($('app').classList.contains('hidden')&&$('guestScreen').classList.contains('hidden')||document.visibilityState==='hidden')return;const count=Math.random()<.14?2:1;for(let n=0;n<count;n++){const bolt=document.createElement('div');bolt.className='falling-bolt';bolt.textContent=Math.random()<.2?'ϟ':'⚡';bolt.style.left=`${Math.random()*100}%`;bolt.style.animationDuration=`${2.3+Math.random()*4}s`;bolt.style.setProperty('--drift',`${(Math.random()-.5)*110}px`);storm.appendChild(bolt);setTimeout(()=>bolt.remove(),6800);}},1250);}
 function bootSplash(){
   const canvas=$('particleCanvas'),ctx=canvas.getContext('2d');let W,H,dpr=1;const resize=()=>{dpr=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;canvas.width=W*dpr;canvas.height=H*dpr;canvas.style.width=`${W}px`;canvas.style.height=`${H}px`;ctx.setTransform(dpr,0,0,dpr,0,0)};resize();addEventListener('resize',resize);
   const particles=Array.from({length:440},()=>({angle:Math.random()*Math.PI*2,radius:Math.max(W,H)*(.15+Math.random()*.85),speed:.4+Math.random()*1.15,size:.4+Math.random()*2.2,tail:8+Math.random()*30}));
@@ -925,6 +1109,10 @@ function bootSplash(){
 
 // Delegated actions.
 document.addEventListener('click',async event=>{
+  const guestAuth=event.target.closest('[data-guest-auth]');if(guestAuth){openGuestAuth(guestAuth.dataset.guestAuth||'register');return;}
+  const guestBuy=event.target.closest('[data-guest-buy]');if(guestBuy){openGuestAuth('register');$('registerUsername').focus();return;}
+  const qrButton=event.target.closest('[data-package-qr]');if(qrButton){await showPackageQr(qrButton.dataset.packageQr);return;}
+  if(event.target.matches('[data-qr-close]')||event.target.closest('[data-qr-close]')){$('packageQrModal').classList.add('hidden');return;}
   const nav=event.target.closest('[data-view]');if(nav){setView(nav.dataset.view);return;}
   const authTab=event.target.closest('[data-auth-view]');if(authTab){showAuthPanel(authTab.dataset.authView);return;}
   const buyButton=event.target.closest('[data-buy-plan]');if(buyButton){await buyPlan(buyButton.dataset.buyPlan);return;}
@@ -932,7 +1120,7 @@ document.addEventListener('click',async event=>{
   if(event.target.matches('[data-close]')||event.target.closest('[data-close]')){closeModal();return;}
   if(event.target.matches('[data-checkout-close]')||event.target.closest('[data-checkout-close]')){closeCheckout();return;}
   const removeDevice=event.target.closest('[data-remove-device]');if(removeDevice){await dbDelete('devices',removeDevice.dataset.removeDevice);state.devices=(await dbAll('devices')).filter(d=>d.owner===state.user.username).map(normalizeDevice);if(!state.devices.length){const fallback={...DEVICE_PRESETS[0],id:`${state.user.username}-fallback`,owner:state.user.username};await dbPut('devices',fallback);state.devices=[fallback];}renderDevices();return;}
-  const focus=event.target.closest('[data-focus-module]');if(focus){const module=state.modules.find(m=>String(m.id)===String(focus.dataset.focusModule));if(module){setView('home');toggleMap(true);if(moduleHasValidLocation(module))focusMapAt(module.lng,module.lat,16);openModule(module);}return;}
+  const focus=event.target.closest('[data-focus-module]');if(focus){const module=state.modules.find(m=>String(m.id)===String(focus.dataset.focusModule));if(module){setView('home');toggleMap(true,{intro:false});if(moduleHasValidLocation(module))focusMapAt(module.lng,module.lat,16);openModule(module);}return;}
   const editGeo=event.target.closest('[data-edit-module-geo]');if(editGeo){await editModuleGeo(editGeo.dataset.editModuleGeo);return;}
   const deleteBtn=event.target.closest('[data-delete-module]');if(deleteBtn&&!deleteBtn.disabled){await deleteModule(deleteBtn.dataset.deleteModule);return;}
   const toggleModule=event.target.closest('[data-toggle-module]');if(toggleModule&&!toggleModule.disabled){await toggleAdminModule(toggleModule.dataset.toggleModule);return;}
@@ -943,17 +1131,23 @@ document.addEventListener('click',async event=>{
   const discount=event.target.closest('[data-save-discount]');if(discount){await adminDiscount(discount.dataset.saveDiscount);return;}
   const blocked=event.target.closest('[data-block-user]');if(blocked){await adminBlock(blocked.dataset.blockUser,blocked.dataset.blocked==='1');return;}
   const collectCash=event.target.closest('[data-collect-cash]');if(collectCash){await confirmCashCollection(Number(collectCash.dataset.collectCash));return;}
-  const relocate=event.target.closest('[data-relocate-module]');if(relocate&&!relocate.disabled){state.adminRelocateModuleId=relocate.dataset.relocateModule;state.adminPickMode=true;setView('home');toggleMap(true);showToast('Toca el lugar exacto en el mapa para ubicar este módulo.','info');return;}
-  const pick=event.target.closest('#pickModuleLocationBtn');if(pick){state.adminRelocateModuleId=null;state.adminPickMode=true;setView('home');toggleMap(true);showToast('Toca el mapa para fijar la ubicación exacta del nuevo módulo.','info');return;}
+  const relocate=event.target.closest('[data-relocate-module]');if(relocate&&!relocate.disabled){state.adminRelocateModuleId=relocate.dataset.relocateModule;state.adminPickMode=true;setView('home');toggleMap(true,{intro:false});showToast('Toca el lugar exacto en el mapa para ubicar este módulo.','info');return;}
+  const pick=event.target.closest('#pickModuleLocationBtn');if(pick){state.adminRelocateModuleId=null;state.adminPickMode=true;setView('home');toggleMap(true,{intro:false});showToast('Toca el mapa para fijar la ubicación exacta del nuevo módulo.','info');return;}
 });
+
+$('authBackGuest').addEventListener('click',()=>showGuest().catch(error=>showAuthError(error.message)));
+$('packageQrClose').addEventListener('click',()=>$('packageQrModal').classList.add('hidden'));
+$('copyPackageQrUrl').addEventListener('click',async()=>{const url=$('packageQrUrl').value;if(!url)return;try{await navigator.clipboard.writeText(url);showToast('Enlace QR copiado.','success');}catch(_){$('packageQrUrl').select();document.execCommand('copy');showToast('Enlace QR copiado.','success');}});
+$('downloadPackageQr').addEventListener('click',()=>{const img=$('packageQrImage');if(!img.src)return;const link=document.createElement('a');link.href=img.src;link.download=`ecoblack-qr-${img.dataset.packageId||'paquete'}.png`;document.body.appendChild(link);link.click();link.remove();});
 
 $('checkoutClose').addEventListener('click',closeCheckout);$('checkoutCancel').addEventListener('click',closeCheckout);$('checkoutConfirm').addEventListener('click',()=>confirmConnection().catch(error=>showToast(error.message,'error')));$('checkoutUseDiscount').addEventListener('change',updateCheckoutSummary);document.querySelectorAll('input[name="checkoutPayment"]').forEach(input=>input.addEventListener('change',updateCheckoutSummary));
 $('loginBtn').addEventListener('click',async()=>{try{state.user=(await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:$('loginUsername').value,password:$('loginPassword').value})})).user;await enterApp();}catch(error){showAuthError(error.message);}});
-$('registerBtn').addEventListener('click',async()=>{try{state.user=(await api('/api/auth/register',{method:'POST',body:JSON.stringify({username:$('registerUsername').value,password:$('registerPassword').value,usage:$('usageSelect').value})})).user;await enterApp();}catch(error){showAuthError(error.message);}});
+$('registerBtn').addEventListener('click',async()=>{try{const result=await api('/api/auth/register',{method:'POST',body:JSON.stringify({username:$('registerUsername').value,password:$('registerPassword').value,usage:$('usageSelect').value})});state.user=result.user;await enterApp();}catch(error){showAuthError(error.message);}});
 $('logoutBtn').addEventListener('click',()=>logout().catch(error=>showToast(error.message,'error')));$('refreshRevenueBtn').addEventListener('click',()=>loadAdminRevenue().catch(error=>showToast(error.message,'error')));$('refreshBmaxBtn').addEventListener('click',()=>loadAdminBmax().catch(error=>showToast(error.message,'error')));$('saveBmaxConfigBtn').addEventListener('click',()=>saveAdminBmaxConfig().catch(error=>showToast(error.message,'error')));
 $('batteryLevel').addEventListener('input',updateEstimate);$('connectorSelect').addEventListener('change',updateEstimate);$('deviceSelect').addEventListener('change',updateEstimate);$('packageSelect').addEventListener('change',()=>{updatePriceSummary();updateEstimate();playPackageSelectionAnimation(currentPackage().id);});$('customMinutes').addEventListener('input',()=>{updatePriceSummary();updateEstimate();});
 $('estimateBtn').addEventListener('click',()=>{const calc=estimate();showToast(`Tiempo orientativo: ${calc.minutes} min · ${calc.watts} W calculados.`, 'success');});$('saveSessionBtn').addEventListener('click',async()=>{if(state.activeSession){showToast('La sesión conectada ya se registra automáticamente.','info');return;}const calc=estimate();await dbPut('history',{owner:state.user.username,device:calc.device.name,connector:calc.connector,package:currentPackage().name,minutes:calc.minutes,moduleName:'Estimación sin conexión',amount_paid:0,date:new Date().toISOString()});state.history=(await dbAll('history')).filter(h=>h.owner===state.user.username);renderHistory();showToast('Estimación guardada en tu historial.','success');});
 $('adminServiceSelect')?.addEventListener('change',event=>changeAdminServiceTheme(event.target.value).catch(error=>showToast(error.message,'error')));
+$('cursorEffectSelect')?.addEventListener('change',event=>setCursorEffect(event.target.value));
 $('locateBtn').addEventListener('click',locate);$('mapMyLocationBtn').addEventListener('click',locate);$('nearestBtn').addEventListener('click',()=>state.nearestModule&&openModule(state.nearestModule));$('toggleMapBtn').addEventListener('click',()=>toggleMap(!state.mapVisible));$('showMapBtn').addEventListener('click',()=>toggleMap(true));$('retryMapBtn')?.addEventListener('click',()=>retryMap());$('resetMapBtn').addEventListener('click',()=>{if(!state.map)return;if(state.mapEngine==='maplibre')state.map.flyTo({center:state.mapCenter,zoom:15.1,pitch:state.map3d?56:0,bearing:state.map3d?-18:0,duration:850});else state.map.setView([state.mapCenter[1],state.mapCenter[0]],13);});$('toggle3dBtn').addEventListener('click',()=>set3D(!state.map3d));
 $('addDeviceBtn').addEventListener('click',()=>addDevice().catch(error=>showToast(error.message,'error')));$('editNameBtn').addEventListener('click',()=>saveProfileName().catch(error=>showToast(error.message,'error')));$('displayNameInput').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();saveProfileName().catch(error=>showToast(error.message,'error'));}});$('profilePhotoInput').addEventListener('change',event=>saveProfilePhoto(event.target.files?.[0]).finally(()=>event.target.value=''));
 $('useNearestBtn').addEventListener('click',()=>{const module=state.nearestModule&&state.nearestModule.status==='available'?state.nearestModule:nearestAvailableModule();if(module&&module.status==='available')connectToModule(module.id);else showToast('No hay módulos disponibles.','error');});$('modalUse').addEventListener('click',()=>state.selectedModule&&connectToModule(state.selectedModule.id));$('modalDisconnect').addEventListener('click',()=>state.selectedModule&&disconnectActive(state.selectedModule.id));$('activeSessionDisconnect').addEventListener('click',()=>state.activeSession&&disconnectActive(state.activeSession.module_id));$('addModuleBtn').addEventListener('click',()=>addModule().catch(error=>showToast(error.message,'error')));$('moduleType')?.addEventListener('change',event=>{if(event.target.value==='bmax')$('modulePower').value='100 W';else if($('modulePower').value==='100 W')$('modulePower').value='30 W';});
@@ -961,4 +1155,4 @@ window.addEventListener('resize',()=>{if(state.mapVisible)resizeMap();});window.
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.user&&state.activeSession&&!state.connectionAnimationActive)renderSessionDock();});
 setInterval(async()=>{if(state.user&&document.visibilityState==='visible'){try{await loadModules();await refreshActiveSession();if(state.user.role==='admin'&&!$('view-admin').classList.contains('hidden')&&$('view-admin').classList.contains('active-view'))await loadAdminRevenue();}catch(error){console.warn(error);}}},15000);
 
-(async()=>{bootNetworkBackground();bootSplash();bootStorm();if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});})();
+(async()=>{bootNetworkBackground();bootSplash();bootStorm();bootPointerTrail();if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});})();

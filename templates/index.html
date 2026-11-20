@@ -10,10 +10,13 @@
   <link rel="icon" href="{{ url_for('static', filename='icons/icon.svg') }}" />
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.12.0/dist/maplibre-gl.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='17.0') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20.0') }}" />
 </head>
 <body>
   <canvas id="networkCanvas" aria-hidden="true"></canvas>
+  <canvas id="pointerTrailCanvas" aria-hidden="true"></canvas>
+  <div id="pointerGlow" aria-hidden="true"></div>
+  <div id="pointerReticle" aria-hidden="true"><span>✦</span></div>
   <div id="storm" class="storm" aria-hidden="true"></div>
 
   <div id="splash" class="screen splash-screen">
@@ -36,10 +39,56 @@
     <div class="splash-tag">SUPERCHARGE YOUR DAY</div>
   </div>
 
+  <section id="guestScreen" class="guest-screen hidden" aria-label="Presentación pública de EcoBlack">
+    <header class="guest-topbar">
+      <a class="guest-brand" href="/" aria-label="EcoBlack inicio"><span class="guest-brand-mark">ϟ</span><span>Eco<span>Black</span></span></a>
+      <div class="guest-top-actions"><span class="guest-live"><i></i> ENERGY NETWORK</span><button class="secondary glass-button" data-guest-auth="login">Iniciar sesión</button><button class="primary glass-button" data-guest-auth="register">Crear cuenta <span>↗</span></button></div>
+    </header>
+    <main class="guest-main">
+      <section class="guest-hero">
+        <div class="guest-hero-copy">
+          <div class="guest-kicker"><span>✦</span> UNA NUEVA FORMA DE CONECTARTE</div>
+          <h1>La energía te<br><em>sigue el ritmo.</em></h1>
+          <p>Descubre módulos EcoBlack, elige el paquete que va contigo y controla tu experiencia de carga desde una sola aplicación.</p>
+          <div class="guest-hero-actions"><a class="primary glass-button" href="#guestPackages">Explorar paquetes <span>→</span></a><a class="guest-text-link" href="#guest-how">Conoce cómo funciona <span>↓</span></a></div>
+          <div class="guest-trust-row"><span>◈ Paquetes flexibles</span><span>ϟ Red de módulos</span><span>♛ Bmax VIP</span></div>
+        </div>
+        <div class="guest-hero-art" aria-hidden="true">
+          <div class="guest-orbit guest-orbit-one"></div><div class="guest-orbit guest-orbit-two"></div><div class="guest-orbit guest-orbit-three"></div>
+          <div class="guest-energy-cube"><div class="guest-cube-face">ϟ</div><span class="guest-cube-spark spark-a">✦</span><span class="guest-cube-spark spark-b">✧</span><span class="guest-cube-spark spark-c">✦</span></div>
+          <div class="guest-art-caption"><small>ECOBLACK</small><b>POWER YOUR MOMENT</b></div>
+        </div>
+      </section>
+
+      <section id="guestOfferBanner" class="guest-qr-offer hidden" aria-live="polite">
+        <div class="guest-offer-icon">⌗</div><div><small>RECOMPENSA POR ESCANEAR</small><h2>¡Gracias por escanear!</h2><p>Al crear tu primera cuenta recibes <b>50% de descuento</b> en <strong id="guestOfferPackage">el paquete seleccionado</strong>.</p></div>
+        <div class="guest-offer-price"><del id="guestOfferBase"></del><b id="guestOfferFinal"></b><small>SOLO PARA CUENTAS NUEVAS</small></div>
+        <button class="primary glass-button" data-guest-auth="register">Crear cuenta y reclamar</button>
+      </section>
+
+      <section class="guest-packages-section" id="guestPackages">
+        <div class="guest-section-heading"><div><span class="guest-kicker">ELIGE TU POTENCIA</span><h2>Paquetes <em>EcoBlack.</em></h2><p>Conoce qué incluye cada opción. Necesitarás una cuenta para realizar la compra y utilizar la red.</p></div><div class="guest-heading-mark">ϟ</div></div>
+        <div id="guestPackageGrid" class="guest-package-grid"><div class="guest-loading">Preparando paquetes de energía...</div></div>
+      </section>
+
+      <section id="guest-how" class="guest-how-section">
+        <div class="guest-section-heading"><div><span class="guest-kicker">SIMPLE. INTELIGENTE. ECOBLACK.</span><h2>¿Qué hace <em>la app?</em></h2><p>Todo empieza eligiendo un paquete y termina con una sesión que puedes consultar desde tu cuenta.</p></div></div>
+        <div class="guest-benefit-grid">
+          <article class="guest-benefit-card"><span class="benefit-icon benefit-map">⌖</span><small>01 / EXPLORA</small><h3>Encuentra módulos</h3><p>Consulta el mapa de la red y revisa la ubicación, disponibilidad y potencia de los módulos.</p></article>
+          <article class="guest-benefit-card"><span class="benefit-icon benefit-bolt">ϟ</span><small>02 / ELIGE</small><h3>Compra tu paquete</h3><p>Compara duración y potencia estimada. Tu cuenta muestra el paquete disponible para usar.</p></article>
+          <article class="guest-benefit-card"><span class="benefit-icon benefit-wave">◉</span><small>03 / CONÉCTATE</small><h3>Controla tu sesión</h3><p>Consulta el tiempo estimado, el estado de conexión y tu historial desde tu perfil.</p></article>
+          <article class="guest-benefit-card guest-benefit-vip"><span class="benefit-icon benefit-crown">♛</span><small>04 / SUBE DE NIVEL</small><h3>Bmax Pro VIP</h3><p>Acceso exclusivo a módulos negros y morados, con objetivo estimado de batería al 100%.</p></article>
+        </div>
+      </section>
+      <footer class="guest-footer"><a class="guest-brand" href="/"><span class="guest-brand-mark">ϟ</span><span>Eco<span>Black</span></span></a><span>POWER YOUR MOMENT · RED ECOBLACK</span><button class="guest-footer-cta" data-guest-auth="register">Únete a la red ↗</button></footer>
+    </main>
+  </section>
+
   <div id="authScreen" class="screen hidden">
     <div class="auth-lightning-bg"></div>
     <div class="auth-card glass">
       <div class="auth-brand"><b>⚡ EcoBlack</b><span>ENERGY NETWORK</span></div>
+      <button id="authBackGuest" class="auth-back-guest">← Volver a paquetes</button>
       <div class="auth-tabs">
         <button class="auth-tab active" data-auth-view="login">Iniciar sesión</button>
         <button class="auth-tab" data-auth-view="register">Crear cuenta</button>
@@ -74,11 +123,11 @@
     <aside class="sidebar glass">
       <div class="logo"><span class="logo-bolt">⚡</span><span>EcoBlack</span></div>
       <button class="nav active glass-button" data-view="home">⌂ <span>Inicio</span></button>
-      <button class="nav glass-button" data-view="services">⚡ <span>Servicios</span></button>
+      <button class="nav glass-button" data-view="services">⚡ <span>Paquetes</span></button>
       <button class="nav glass-button" data-view="charge">🔋 <span>Cargar</span></button>
       <button class="nav glass-button" data-view="profile">◉ <span>Perfil</span></button>
       <button id="adminNav" class="nav glass-button hidden" data-view="admin">🛠 <span>Admin</span></button>
-      <div class="side-footer">EcoBlack V16<br><span>Flask · MongoDB Atlas · SQLite · Bmax</span></div>
+      <div class="side-footer">EcoBlack Vone<br><span> tragic sexxxi</span></div>
     </aside>
 
     <main class="main">
@@ -101,14 +150,20 @@
       <section id="view-home" class="view active-view">
         <div class="hero-grid">
           <div class="glass hero-copy">
-            <div class="hero-kicker">⚡ CARGA INTELIGENTE</div>
-            <h2>Tu energía,<br><span>donde la necesites.</span></h2>
-            <p>Encuentra módulos EcoBlack, revisa disponibilidad y conecta tu dispositivo con un estimado de tiempo realista.</p>
-            <div class="hero-actions">
-              <button class="primary glass-button" data-view="charge">Cargar ahora</button>
-              <button id="toggleMapBtn" class="secondary glass-button">Mostrar mapa</button>
-              <button class="secondary glass-button" data-view="services">Comparar paquetes</button>
+            <div class="hero-hud-art" aria-hidden="true">
+              <span class="hero-hud-orbit orbit-a"></span><span class="hero-hud-orbit orbit-b"></span>
+              <span class="hero-hud-core">ϟ</span><span class="hero-hud-spark spark-a">✦</span><span class="hero-hud-spark spark-b">✧</span>
+              <span class="hero-hud-readout"><small>NETWORK STATUS</small><b>ONLINE <i></i></b><small>POWER FLOW · ACTIVE</small></span>
             </div>
+            <div class="hero-kicker"><span class="hero-kicker-pulse"></span> ⚡ CARGA INTELIGENTE · ECOblack NETWORK</div>
+            <h2>Tu energía,<br><span>donde la necesites.</span></h2>
+            <p>Explora la red, encuentra un módulo cercano y conecta tu dispositivo con una experiencia de carga diseñada para moverse contigo.</p>
+            <div class="hero-actions">
+              <button class="primary glass-button" data-view="charge">Cargar ahora <span>↗</span></button>
+              <button id="toggleMapBtn" class="secondary glass-button">Explorar mapa <span>⌖</span></button>
+              <button class="secondary glass-button" data-view="services">Ver paquetes <span>→</span></button>
+            </div>
+            <div class="hero-signal-strip" aria-hidden="true"><span><i></i> RED ACTIVA</span><span>01 / SMART ENERGY</span><span>⚡ ECOBLACK SYSTEM</span></div>
           </div>
           <div class="glass nearest-card">
             <div class="card-head"><span>⚡ MÁS CERCANO</span><span class="pulse-dot"></span></div>
@@ -140,11 +195,31 @@
             <button id="showMapBtn" class="primary glass-button">Mostrar mapa</button>
           </div>
           <div id="map" class="hidden"></div>
+          <div id="mapIntroOverlay" class="map-intro-overlay hidden" aria-live="polite" aria-hidden="true">
+            <div class="map-intro-stars" aria-hidden="true"></div>
+            <div class="map-globe-stage" aria-hidden="true">
+              <div class="map-globe-halo"></div><div class="map-globe-orbit orbit-one"></div><div class="map-globe-orbit orbit-two"></div>
+              <div class="map-globe">
+                <svg viewBox="0 0 320 320" role="presentation" aria-hidden="true">
+                  <defs><clipPath id="mapGlobeClip"><circle cx="160" cy="160" r="137"/></clipPath><radialGradient id="mapGlobeFill" cx="35%" cy="28%"><stop offset="0" stop-color="#6fe7ff"/><stop offset=".38" stop-color="#176b91"/><stop offset="1" stop-color="#071624"/></radialGradient></defs>
+                  <circle cx="160" cy="160" r="137" fill="url(#mapGlobeFill)" stroke="#9cecff" stroke-opacity=".7" stroke-width="1.4"/>
+                  <g clip-path="url(#mapGlobeClip)">
+                    <g class="globe-grid-lines" fill="none" stroke="#a2eaff" stroke-opacity=".27" stroke-width="1"><ellipse cx="160" cy="160" rx="58" ry="137"/><ellipse cx="160" cy="160" rx="105" ry="137"/><path d="M23 160h274M35 110h250M35 210h250"/><ellipse cx="160" cy="160" rx="137" ry="51"/><ellipse cx="160" cy="160" rx="137" ry="94"/></g>
+                    <g class="globe-continents" fill="#9dffbd" fill-opacity=".78" stroke="#b8ffd0" stroke-opacity=".25" stroke-width="1"><path d="M65 78l24-19 35 5 9 17-12 18-4 22-17 13-11 30-16-10-2-21-14-10-9-23zM128 160l19 8 13 28-7 20-10 34-14 23-13-19 3-28-9-22 9-21zM164 75l25-13 39 7 26 18 22 5 9 22-19 14-22-3-13 15-18-3-13-20-25-6-13-18zM207 154l19-9 25 11 12 27-14 34-24 10-18-19-7-29zM274 226l20-8 12 13-11 18-18-4z"/></g>
+                    <path d="M20 160h280" stroke="#e2fffb" stroke-opacity=".12"/>
+                  </g>
+                  <circle cx="160" cy="160" r="137" fill="none" stroke="#d7fbff" stroke-opacity=".35"/>
+                </svg>
+              </div>
+              <span class="map-globe-scan"></span>
+            </div>
+            <div class="map-intro-copy"><small>ECOblack · GLOBAL NETWORK</small><b id="mapIntroTitle">Conectando con tu ubicación</b><span id="mapIntroSubtitle">Buscando tu lugar en el mundo…</span><div class="map-intro-progress"><i></i></div><small class="map-geo-credit">Mapas y datos geográficos © OpenStreetMap contributors</small></div>
+          </div>
           <div id="mapFallback" class="map-fallback hidden"><div><b>Modo radar local</b><span>No se pudieron cargar los mosaicos del mapa. La red EcoBlack sigue disponible.</span><button id="retryMapBtn" class="secondary glass-button">Reintentar mapa</button></div></div>
         </div>
       </section>
 
-      <section id="view-services" class="view"><div class="section-title"><div><h3>Planes EcoBlack</h3><p>Compra un plan antes de conectar. Cada plan normal incluye una sesión; Bmax Pro ofrece acceso permanente a módulos Bmax.</p></div></div><div id="serviceGrid" class="service-grid"></div></section>
+      <section id="view-services" class="view"><div class="section-title"><div><h3>Paquetes EcoBlack</h3><p>Conoce sus beneficios y compra el paquete que mejor se adapte a tu dispositivo.</p></div></div><div id="serviceGrid" class="service-grid"></div></section>
 
       <section id="view-charge" class="view">
         <div class="charge-layout">
@@ -183,6 +258,7 @@
             <label class="display-name-field">Nombre visible<input id="displayNameInput" maxlength="40" placeholder="Cómo quieres que te vean" /></label>
             <button id="editNameBtn" class="secondary glass-button full">Guardar nombre visible</button>
             <div class="balance-card"><span>SALDO DISPONIBLE</span><strong id="profileBalance">$0.00</strong><small id="profileDiscount">Sin descuento personal</small></div>
+            <div class="cursor-style-setting"><label for="cursorEffectSelect">Destello personalizable</label><select id="cursorEffectSelect"><option value="violet">Nebulosa violeta</option><option value="electric">Rayo eléctrico</option><option value="gold">Destello solar</option><option value="ice">Plasma hielo</option><option value="off">Desactivado</option></select><small>El efecto sigue el ratón o el dedo. Se guarda en este dispositivo.</small></div>
           </div>
           <div class="glass panel"><div class="panel-title"><span>📱</span><div><h3>Mis dispositivos</h3><p>Guarda el modelo y sus características para una estimación más ajustada.</p></div></div><div id="deviceList" class="list"></div>
             <div class="add-device-form"><label>Modelo del celular<input id="newDevice" placeholder="Ej. iPhone 16 Pro" /></label><div class="two-col"><label>Batería (mAh)<input id="newDeviceBattery" type="number" min="1000" max="30000" value="4500" /></label><label>Carga máxima (W)<input id="newDeviceWatts" type="number" min="3" max="300" value="30" /></label></div><label>Conector<select id="newDeviceConnector"><option>USB-C</option><option>Lightning</option><option>Micro-USB</option><option>Inalámbrico</option></select></label><button id="addDeviceBtn" class="primary glass-button full">Guardar dispositivo</button></div>
@@ -210,13 +286,14 @@
         <div class="admin-grid">
           <div class="glass panel"><div class="panel-title"><span>➕</span><div><h3>Añadir módulo</h3><p>Agrega ciudad y estado para agrupar correctamente el mapa. Toca el mapa para fijar la ubicación exacta. No guardes el módulo sin un punto seleccionado o coordenadas válidas.</p></div></div>
             <label>Nombre<input id="moduleName" placeholder="EcoBlack Centro Norte" /></label>
-            <div class="two-col"><label>Ciudad<input id="moduleCity" placeholder="Cancún" /></label><label>Estado<input id="moduleState" placeholder="Quintana Roo" /></label></div>
+            <div class="two-col"><label>Ciudad<input id="moduleCity" placeholder="Se completa al elegir el mapa" autocomplete="address-level2" /></label><label>Estado / Provincia<input id="moduleState" placeholder="Se completa automáticamente" autocomplete="address-level1" /></label></div>
+            <label>País<input id="moduleCountry" placeholder="Se completa automáticamente al elegir el mapa" autocomplete="country-name" /></label>
             <div class="two-col"><label>Latitud<input id="moduleLat" type="number" step="any" placeholder="21.16" /></label><label>Longitud<input id="moduleLng" type="number" step="any" placeholder="-86.85" /></label></div>
             <div class="two-col"><label>Tipo de módulo<select id="moduleType"><option value="standard">EcoBlack normal</option><option value="bmax">Bmax · negro / morado</option></select></label><label>Potencia<select id="modulePower"><option>25 W</option><option selected>30 W</option><option>45 W</option><option>65 W</option><option>100 W</option></select></label></div>
             <label>Estado inicial<select id="moduleStatus"><option value="available">Disponible</option><option value="busy">Ocupado</option></select></label>
             <p class="bmax-module-form-note">Los módulos Bmax tienen identidad visual negra y violeta y una animación exclusiva cuando se ocupan.</p>
             <label>Conectores<div id="connectorChecks" class="check-grid"><label><input type="checkbox" value="USB-C" checked> USB-C</label><label><input type="checkbox" value="Lightning"> Lightning</label><label><input type="checkbox" value="Micro-USB"> Micro-USB</label><label><input type="checkbox" value="Inalámbrico"> Inalámbrico</label></div></label>
-            <div class="admin-pick-row"><button id="pickModuleLocationBtn" class="secondary glass-button">Elegir punto en el mapa</button><span id="pickLocationStatus" class="pick-status">Sin punto seleccionado</span></div>
+            <div class="admin-pick-row"><button id="pickModuleLocationBtn" class="secondary glass-button">Elegir punto en el mapa</button><span id="pickLocationStatus" class="pick-status">Sin punto seleccionado</span></div><small class="geo-attribution">Ciudad, estado y país se detectan al elegir un punto. Datos geográficos: © OpenStreetMap contributors.</small>
             <button id="addModuleBtn" class="primary glass-button full">Añadir al mapa ⚡</button>
           </div>
           <div class="glass panel"><div class="panel-title"><span>🗺</span><div><h3>Módulos actuales</h3><p>Administra módulos de la red.</p></div></div><div id="adminModuleList" class="list"></div></div>
@@ -316,6 +393,18 @@
     <div class="bmax-activation-copy"><small>ECOBLACK · EXCLUSIVE ACCESS</small><h2 id="bmaxActivationTitle">Activando Bmax Pro</h2><p id="bmaxActivationText">Verificando tu acceso premium...</p></div>
     <div class="bmax-activation-progress"><div id="bmaxActivationProgress"></div></div>
   </div>
+  <div id="packageQrModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="packageQrTitle">
+    <div class="modal-backdrop" data-qr-close></div>
+    <div class="modal-card package-qr-card glass">
+      <button id="packageQrClose" class="modal-close" aria-label="Cerrar QR">×</button>
+      <div class="package-qr-symbol">⌗</div><p class="eyebrow">INVITA A ALGUIEN A ECOBLACK</p><h3 id="packageQrTitle">QR de paquete</h3>
+      <p id="packageQrBenefit" class="muted">Escanea para conocer los beneficios y obtener una oferta de bienvenida.</p>
+      <div class="package-qr-image-wrap"><img id="packageQrImage" alt="Código QR de descuento EcoBlack" /></div>
+      <div class="package-qr-discount"><b>50% OFF</b><span>Para personas que creen su primera cuenta desde este QR y compren este paquete.</span></div>
+      <input id="packageQrUrl" class="package-qr-url" readonly aria-label="Enlace del QR" />
+      <div class="package-qr-actions"><button id="copyPackageQrUrl" class="secondary glass-button">Copiar enlace</button><button id="downloadPackageQr" class="primary glass-button">Descargar QR ↓</button></div>
+    </div>
+  </div>
   <div id="connectionAnimation" class="connection-animation hidden" aria-live="assertive" aria-atomic="true">
     <div class="connection-animation-backdrop"></div>
     <div id="connectionAnimationCore" class="connection-animation-core">
@@ -334,6 +423,6 @@
   <div id="toast" class="toast hidden"></div>
   <script src="https://unpkg.com/maplibre-gl@5.12.0/dist/maplibre-gl.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
-  <script src="{{ url_for('static', filename='js/app.js', v='17.0') }}"></script>
+      <script src="{{ url_for('static', filename='js/app.js', v='20.0') }}"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-"""MongoDB Atlas backend for EcoBlack V16 · plan access, Bmax Pro and precise map groups.
+"""MongoDB Atlas backend for EcoBlack V20 · public packages, QR discounts and geolocated modules.
 
 The route response contracts intentionally match static/js/app.js.
 Production configuration comes from environment variables; never commit secrets.
@@ -9,13 +9,19 @@ import os
 import time
 import secrets
 import uuid
+import base64
+import io
+import ipaddress
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Flask, render_template, jsonify, request, session
+from werkzeug.middleware.proxy_fix import ProxyFix
 from pymongo import MongoClient, ReturnDocument, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from werkzeug.security import generate_password_hash, check_password_hash
+import qrcode
 
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DB = os.getenv("MONGODB_DB", "ecoblack").strip() or "ecoblack"
@@ -33,6 +39,7 @@ app.config.update(
     SESSION_COOKIE_SECURE=bool(os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID")),
     PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 14,
 )
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 client = MongoClient(
     MONGODB_URI,
@@ -53,16 +60,17 @@ counters = db["counters"]
 bmax_config = db["bmax_config"]
 bmax_reservations = db["bmax_reservations"]
 bmax_purchases = db["bmax_purchases"]
+qr_campaigns = db["package_qr_campaigns"]
 
 WELCOME_BALANCE = 100.0
 BMAX_DEFAULT_SLOTS = 10
 BMAX_DEFAULT_PRICE = 99.0  # Precio inicial editable desde el panel de administración.
 BMAX_RESERVATION_SECONDS = 300
 DEFAULT_MODULES = [
-    {"id": "EB-001", "name": "EcoBlack Centro", "lat": 21.1619, "lng": -86.8515, "city": "Cancún", "state": "Quintana Roo", "status": "available", "power": "30 W", "connectors": ["USB-C", "Lightning", "Inalámbrico"], "created_by": "system"},
-    {"id": "EB-002", "name": "EcoBlack Plaza", "lat": 21.1638, "lng": -86.8460, "city": "Cancún", "state": "Quintana Roo", "status": "available", "power": "45 W", "connectors": ["USB-C", "Lightning"], "created_by": "system"},
-    {"id": "EB-003", "name": "EcoBlack Zona Hotelera", "lat": 21.1357, "lng": -86.7416, "city": "Cancún", "state": "Quintana Roo", "status": "available", "power": "65 W", "connectors": ["USB-C", "Inalámbrico"], "created_by": "system"},
-    {"id": "EB-004", "name": "EcoBlack Puerto", "lat": 21.1743, "lng": -86.8234, "city": "Cancún", "state": "Quintana Roo", "status": "available", "power": "25 W", "connectors": ["USB-C", "Micro-USB"], "created_by": "system"},
+    {"id": "EB-001", "name": "EcoBlack Centro", "lat": 21.1619, "lng": -86.8515, "city": "Cancún", "state": "Quintana Roo", "country": "México", "status": "available", "power": "30 W", "connectors": ["USB-C", "Lightning", "Inalámbrico"], "created_by": "system"},
+    {"id": "EB-002", "name": "EcoBlack Plaza", "lat": 21.1638, "lng": -86.8460, "city": "Cancún", "state": "Quintana Roo", "country": "México", "status": "available", "power": "45 W", "connectors": ["USB-C", "Lightning"], "created_by": "system"},
+    {"id": "EB-003", "name": "EcoBlack Zona Hotelera", "lat": 21.1357, "lng": -86.7416, "city": "Cancún", "state": "Quintana Roo", "country": "México", "status": "available", "power": "65 W", "connectors": ["USB-C", "Inalámbrico"], "created_by": "system"},
+    {"id": "EB-004", "name": "EcoBlack Puerto", "lat": 21.1743, "lng": -86.8234, "city": "Cancún", "state": "Quintana Roo", "country": "México", "status": "available", "power": "25 W", "connectors": ["USB-C", "Micro-USB"], "created_by": "system"},
 ]
 PACKAGES = {
     "basic": {"id": "basic", "name": "Básico", "minutes": 15, "price": 15.0, "max_watts": 10, "description": "Hasta 15 min de sesión y potencia limitada a 10 W."},
@@ -126,11 +134,18 @@ def bmax_status_for_user(user):
     total = int(config.get("total_slots", BMAX_DEFAULT_SLOTS))
     sold = int(config.get("sold_count", 0))
     reserved = int(config.get("reserved_count", 0))
+    coupon = (user or {}).get("welcome_coupon") or {}
+    coupon_valid = coupon.get("package_id") == "bmax_pro" and not coupon.get("redeemed_at")
+    base_price = round(float(config.get("price_mxn", BMAX_DEFAULT_PRICE)), 2)
+    discount_percent = 50.0 if coupon_valid else 0.0
+    final_price = round(base_price * (1 - discount_percent / 100), 2)
     return {
         "package_id": "bmax_pro", "name": "Bmax Pro", "total_slots": total,
         "sold_count": sold, "reserved_count": reserved,
         "available_slots": max(0, total - sold - reserved),
-        "price_mxn": round(float(config.get("price_mxn", BMAX_DEFAULT_PRICE)), 2),
+        "price_mxn": final_price,
+        "base_price_mxn": base_price,
+        "discount_percent": discount_percent,
         "has_purchased": bool(purchase),
         "purchase": {"purchased_at": purchase.get("purchased_at"), "price_mxn": purchase.get("price_mxn")} if purchase else None,
         "reservation": {"id": reservation.get("_id"), "expires_at": reservation.get("expires_at"), "created_at": reservation.get("created_at")} if reservation else None,
@@ -168,6 +183,18 @@ def init_db():
     bmax_reservations.create_index([("status", ASCENDING), ("expires_at", ASCENDING)], name="bmax_reservation_expiry")
     bmax_purchases.create_index([("username", ASCENDING)], unique=True, name="one_bmax_purchase_per_user")
     bmax_purchases.create_index([("purchased_at", DESCENDING)], name="bmax_purchase_date")
+    qr_campaigns.create_index([("package_id", ASCENDING)], unique=True, name="qr_package_unique")
+    qr_campaigns.create_index([("token", ASCENDING)], unique=True, name="qr_token_unique")
+    for package_id in PACKAGES:
+        try:
+            qr_campaigns.update_one(
+                {"package_id": package_id},
+                {"$setOnInsert": {"package_id": package_id, "token": secrets.token_urlsafe(24), "active": True, "created_at": time.time()}},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            # A concurrent worker may have created this package campaign first.
+            pass
     bmax_config.update_one(
         {"_id": "bmax_pro"},
         {"$setOnInsert": {"total_slots": BMAX_DEFAULT_SLOTS, "reserved_count": 0, "sold_count": 0, "price_mxn": BMAX_DEFAULT_PRICE, "created_at": time.time()}, "$set": {"updated_at": time.time()}},
@@ -212,6 +239,10 @@ def init_db():
             {"id": item["id"], "$or": [{"state": {"$exists": False}}, {"state": None}, {"state": ""}]},
             {"$set": {"state": item["state"]}},
         )
+        modules.update_one(
+            {"id": item["id"], "$or": [{"country": {"$exists": False}}, {"country": None}, {"country": ""}]},
+            {"$set": {"country": item.get("country", "México")}},
+        )
     # Initialize counters from documents so imported SQLite records don't collide.
     for collection_name, collection in (
         ("users", users), ("module_sessions", module_sessions),
@@ -250,6 +281,16 @@ def user_public(user):
     result["balance"] = round(float(result.get("balance") or 0), 2)
     result["discount_percent"] = round(float(result.get("discount_percent") or 0), 2)
     result["blocked"] = bool(result.get("blocked", False))
+    coupon = result.get("welcome_coupon")
+    if isinstance(coupon, dict):
+        result["welcome_coupon"] = {
+            "package_id": coupon.get("package_id"),
+            "discount_percent": float(coupon.get("discount_percent") or 50),
+            "claimed_at": coupon.get("claimed_at"),
+            "redeemed_at": coupon.get("redeemed_at"),
+        }
+    else:
+        result["welcome_coupon"] = None
     return result
 
 
@@ -310,6 +351,7 @@ def module_payload(row, admin=False):
     item["module_type"] = item.get("module_type") if item.get("module_type") in ("standard", "bmax") else "standard"
     item["city"] = str(item.get("city") or "").strip()
     item["state"] = str(item.get("state") or "").strip()
+    item["country"] = str(item.get("country") or "").strip()
     item["remaining_seconds"] = max(0, int(item["occupied_until"] - time.time())) if item.get("occupied_until") else 0
     if not admin:
         item.pop("occupied_by", None)
@@ -404,9 +446,119 @@ def calculate_price(package_id, minutes, discount_percent):
     return duration, round(base, 2), discount, final_price
 
 
+def welcome_coupon_for(user, package_id=None):
+    """Return a valid first-account QR coupon, optionally for one package."""
+    coupon = (user or {}).get("welcome_coupon") or {}
+    if not isinstance(coupon, dict) or coupon.get("redeemed_at"):
+        return None
+    if package_id and coupon.get("package_id") != package_id:
+        return None
+    if coupon.get("package_id") not in PACKAGES:
+        return None
+    return coupon
+
+
+def public_base_url(require_public=False):
+    configured = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+    if configured:
+        base = configured
+    else:
+        scheme = request.headers.get("X-Forwarded-Proto", request.scheme).split(",", 1)[0].strip()
+        host = request.headers.get("X-Forwarded-Host", request.host).split(",", 1)[0].strip()
+        base = f"{scheme}://{host}"
+    if require_public:
+        parsed = urlsplit(base)
+        hostname = (parsed.hostname or "").lower()
+        try:
+            is_loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = hostname == "localhost" or hostname.endswith(".localhost")
+        if parsed.scheme != "https" or not hostname or is_loopback:
+            raise ValueError("El QR necesita una URL pública HTTPS. Configura APP_BASE_URL con tu dominio de Render.")
+    return base
+
+
 @app.get("/")
 def home():
     return render_template("index.html")
+
+
+@app.get("/qr/<token>")
+def package_qr_landing(token):
+    campaign = qr_campaigns.find_one({"token": token, "active": True})
+    if not campaign or campaign.get("package_id") not in PACKAGES:
+        return render_template("qr_offer.html", valid=False, package=None, eligible=False), 404
+    user = current_user()
+    eligible = not bool(user) and not bool(session.get("device_has_account"))
+    if eligible:
+        session["qr_offer_token"] = token
+        session.permanent = True
+    else:
+        session.pop("qr_offer_token", None)
+    package = PACKAGES[campaign["package_id"]]
+    if package["id"] == "bmax_pro":
+        config = bmax_config.find_one({"_id": "bmax_pro"}) or {}
+        base_price = round(float(config.get("price_mxn", BMAX_DEFAULT_PRICE)), 2)
+    else:
+        _, base_price, _, _ = calculate_price(package["id"], package["minutes"], 0)
+    return render_template("qr_offer.html", valid=True, package=package, eligible=eligible,
+                           base_price=base_price, discounted_price=round(base_price * .5, 2),
+                           home_url=public_base_url())
+
+
+@app.get("/api/qr/offer")
+def get_qr_offer():
+    if current_user() or session.get("device_has_account"):
+        return jsonify({"eligible": False, "reason": "account_exists"})
+    token = session.get("qr_offer_token")
+    campaign = qr_campaigns.find_one({"token": token, "active": True}) if token else None
+    if not campaign or campaign.get("package_id") not in PACKAGES:
+        return jsonify({"eligible": False})
+    package_id = campaign["package_id"]
+    package = PACKAGES[package_id]
+    if package_id == "bmax_pro":
+        config = bmax_config.find_one({"_id": "bmax_pro"}) or {}
+        base_price = round(float(config.get("price_mxn", BMAX_DEFAULT_PRICE)), 2)
+    else:
+        _, base_price, _, _ = calculate_price(package_id, package["minutes"], 0)
+    return jsonify({"eligible": True, "package_id": package_id, "package_name": package["name"],
+                    "discount_percent": 50, "base_price_mxn": base_price,
+                    "discounted_price_mxn": round(base_price * .5, 2)})
+
+
+@app.get("/api/public/packages")
+def public_packages():
+    config = bmax_config.find_one({"_id": "bmax_pro"}) or {}
+    items = []
+    for package in PACKAGES.values():
+        if package["id"] == "bmax_pro":
+            price = round(float(config.get("price_mxn", BMAX_DEFAULT_PRICE)), 2)
+        else:
+            _, price, _, _ = calculate_price(package["id"], package["minutes"], 0)
+        items.append({"id": package["id"], "name": package["name"], "description": package["description"],
+                      "minutes": package["minutes"], "max_watts": package["max_watts"], "price_mxn": price,
+                      "limited": package["id"] == "bmax_pro"})
+    bmax = bmax_status_for_user(None)
+    return jsonify({"packages": items, "bmax": bmax})
+
+
+@app.get("/api/qr/package/<package_id>")
+def package_qr_image(package_id):
+    if package_id not in PACKAGES:
+        return jsonify({"ok": False, "error": "Paquete no encontrado."}), 404
+    campaign = qr_campaigns.find_one({"package_id": package_id, "active": True})
+    if not campaign:
+        return jsonify({"ok": False, "error": "El QR de este paquete no está disponible."}), 503
+    try:
+        target_url = f"{public_base_url(require_public=True)}/qr/{campaign['token']}"
+    except ValueError as error:
+        return jsonify({"ok": False, "error": str(error)}), 503
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=9, border=3)
+    qr.add_data(target_url); qr.make(fit=True)
+    image = qr.make_image(fill_color="#14111b", back_color="#ffffff")
+    output = io.BytesIO(); image.save(output, format="PNG")
+    data_url = "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+    return jsonify({"ok": True, "package_id": package_id, "url": target_url, "image": data_url})
 
 
 @app.get("/healthz")
@@ -424,6 +576,7 @@ def network_ping():
 
 
 @app.get("/api/modules")
+@login_required
 def get_modules():
     release_expired_modules()
     user = current_user() or {}
@@ -441,8 +594,15 @@ def get_packages():
     for package in PACKAGES.values():
         if package["id"] == "bmax_pro" and not bmax["has_purchased"]:
             continue
-        minutes, base, discount, final = calculate_price(package["id"], package["minutes"], user["discount_percent"])
-        items.append({**package, "minutes": minutes, "base_price": base, "discount_percent": discount, "final_price": final, "purchased": package["id"] == "bmax_pro"})
+        qr_coupon = welcome_coupon_for(user, package["id"])
+        discount_rate = 50.0 if qr_coupon else user["discount_percent"]
+        minutes, base, discount, final = calculate_price(package["id"], package["minutes"], discount_rate)
+        if package["id"] == "bmax_pro":
+            base = bmax.get("base_price_mxn", bmax.get("price_mxn", BMAX_DEFAULT_PRICE))
+            discount = bmax.get("discount_percent", 0)
+            final = bmax.get("price_mxn", base)
+        items.append({**package, "minutes": minutes, "base_price": base, "discount_percent": discount, "final_price": final,
+                      "qr_coupon_applied": bool(qr_coupon), "purchased": package["id"] == "bmax_pro"})
     active_package = PACKAGES.get(active_plan_id) if active_plan_id else None
     current_plan = None
     if active_package:
@@ -454,7 +614,8 @@ def get_packages():
             "permanent": active_plan_id == "bmax_pro",
             "price_mxn": round(float(user.get("plan_price_mxn") or (bmax.get("purchase") or {}).get("price_mxn") or 0), 2),
         }
-    return jsonify({"packages": items, "balance": user["balance"], "discount_percent": user["discount_percent"], "bmax": bmax, "current_plan": current_plan})
+    return jsonify({"packages": items, "balance": user["balance"], "discount_percent": user["discount_percent"],
+                    "welcome_coupon": welcome_coupon_for(user), "bmax": bmax, "current_plan": current_plan})
 
 
 @app.post("/api/plans/purchase")
@@ -467,7 +628,9 @@ def purchase_plan():
         return jsonify({"ok": False, "error": "Selecciona un plan estándar válido. Bmax Pro se compra desde su apartado limitado."}), 400
     try:
         requested_minutes = data.get("minutes", PACKAGES[package_id]["minutes"])
-        discount = float(user.get("discount_percent") or 0)
+        live_for_coupon = users.find_one({"username": user["username"]}) or user
+        qr_coupon = welcome_coupon_for(live_for_coupon, package_id)
+        discount = 50.0 if qr_coupon else float(live_for_coupon.get("discount_percent") or 0)
         minutes, base, discount_pct, price = calculate_price(package_id, requested_minutes, discount)
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "La duración del plan no es válida."}), 400
@@ -485,9 +648,13 @@ def purchase_plan():
                         raise ApiError("Ya tienes un plan activo. Úsalo antes de comprar otro.", 409)
                     if bmax_purchases.find_one({"username": user["username"], "status": "active"}, session=mongo_session):
                         raise ApiError("Tu cuenta ya tiene Bmax Pro permanente; no necesitas otro plan.", 409)
+                    user_set = {"active_plan": package_id, "active_plan_status": "ready", "active_plan_minutes": minutes,
+                                "plan_price_mxn": price, "plan_purchased_at": now, "active_plan_discount_percent": discount_pct}
+                    if qr_coupon:
+                        user_set["welcome_coupon.redeemed_at"] = now
                     debited = users.update_one(
                         {"username": user["username"], "balance": {"$gte": price}, "active_plan": {"$in": [None, ""]}, "blocked": {"$ne": True}},
-                        {"$inc": {"balance": -price}, "$set": {"active_plan": package_id, "active_plan_status": "ready", "active_plan_minutes": minutes, "plan_price_mxn": price, "plan_purchased_at": now, "active_plan_discount_percent": discount_pct}},
+                        {"$inc": {"balance": -price}, "$set": user_set},
                         session=mongo_session,
                     )
                     if debited.modified_count != 1:
@@ -530,6 +697,9 @@ def auth_login():
         return jsonify({"ok": False, "error": "Usuario o contraseña incorrectos."}), 401
     if user.get("blocked") and user.get("role") != "admin":
         return jsonify({"ok": False, "error": "Tu cuenta está bloqueada. Contacta al administrador."}), 403
+    # A QR welcome offer is only claimable during creation of a brand-new account.
+    session.pop("qr_offer_token", None)
+    session["device_has_account"] = True
     session["username"] = username
     session.permanent = True
     return jsonify({"ok": True, "user": current_user()})
@@ -537,6 +707,8 @@ def auth_login():
 
 @app.post("/api/auth/register")
 def auth_register():
+    if session.get("username") and current_user():
+        return jsonify({"ok": False, "error": "Cierra la sesión actual antes de crear otra cuenta."}), 409
     data = request.get_json(silent=True) or {}
     username = str(data.get("username", "")).strip().lower()
     password = str(data.get("password", ""))
@@ -547,17 +719,28 @@ def auth_register():
         return jsonify({"ok": False, "error": "La contraseña debe tener al menos 4 caracteres."}), 400
     if not usage:
         return jsonify({"ok": False, "error": "Selecciona dónde usarás EcoBlack."}), 400
+    offer_token = session.get("qr_offer_token")
+    offer_campaign = qr_campaigns.find_one({"token": offer_token, "active": True}) if offer_token and not session.get("device_has_account") else None
+    if offer_token and not offer_campaign:
+        session.pop("qr_offer_token", None)
+        return jsonify({"ok": False, "error": "El QR ya no está disponible. Puedes crear tu cuenta sin el descuento."}), 410
+    now = now_iso()
+    welcome_coupon = None
+    if offer_campaign and offer_campaign.get("package_id") in PACKAGES:
+        welcome_coupon = {"package_id": offer_campaign["package_id"], "discount_percent": 50.0,
+                          "campaign_token": offer_token, "claimed_at": time.time(), "redeemed_at": None}
     try:
         user_id = next_id("users")
-        users.insert_one({
+        new_user = {
             "_id": username, "id": user_id, "username": username,
             "password_hash": generate_password_hash(password), "role": "user", "usage": usage,
             "balance": WELCOME_BALANCE, "discount_percent": 0.0, "blocked": False,
             "avatar_data": None, "display_name": username,
             "active_plan": None, "active_plan_status": "none", "active_plan_minutes": 0,
             "plan_price_mxn": 0.0, "plan_purchased_at": None, "active_plan_discount_percent": 0.0,
-            "created_at": now_iso(),
-        })
+            "welcome_coupon": welcome_coupon, "created_at": now,
+        }
+        users.insert_one(new_user)
     except DuplicateKeyError:
         return jsonify({"ok": False, "error": "Ese usuario ya existe."}), 409
     tx_id = next_id("balance_transactions")
@@ -567,13 +750,17 @@ def auth_register():
         "balance_after": WELCOME_BALANCE, "description": "Saldo de bienvenida de EcoBlack", "created_at": now_iso(),
     })
     session["username"] = username
+    session.pop("qr_offer_token", None)
+    session["device_has_account"] = True
     session.permanent = True
-    return jsonify({"ok": True, "user": current_user()})
+    return jsonify({"ok": True, "user": current_user(), "welcome_coupon": user_public(new_user).get("welcome_coupon")})
 
 
 @app.post("/api/auth/logout")
 def auth_logout():
     session.clear()
+    session["device_has_account"] = True
+    session.permanent = True
     return jsonify({"ok": True})
 
 
@@ -615,7 +802,7 @@ def profile_transactions():
 @admin_required
 def create_module():
     data = request.get_json(silent=True) or {}; name = str(data.get("name", "")).strip()
-    city = str(data.get("city", "")).strip()[:80]; state_name = str(data.get("state", "")).strip()[:80]
+    city = str(data.get("city", "")).strip()[:80]; state_name = str(data.get("state", "")).strip()[:80]; country = str(data.get("country", "")).strip()[:80]
     lat_raw, lng_raw = data.get("lat"), data.get("lng")
     if lat_raw is None or lng_raw is None or str(lat_raw).strip() == "" or str(lng_raw).strip() == "":
         return jsonify({"ok": False, "error": "Selecciona la ubicación del módulo en el mapa o escribe latitud y longitud."}), 400
@@ -623,8 +810,8 @@ def create_module():
         lat, lng = float(lat_raw), float(lng_raw)
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "Latitud y longitud deben ser números válidos."}), 400
-    if not name or not city or not state_name or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
-        return jsonify({"ok": False, "error": "Completa nombre, ciudad, estado y coordenadas dentro de los rangos válidos."}), 400
+    if not name or not city or not state_name or not country or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+        return jsonify({"ok": False, "error": "Completa nombre, ciudad, estado, país y coordenadas dentro de los rangos válidos."}), 400
     if abs(lat) < 1e-9 and abs(lng) < 1e-9:
         return jsonify({"ok": False, "error": "La ubicación 0, 0 no es válida para este módulo. Elige un punto real en el mapa."}), 400
     connectors = data.get("connectors", ["USB-C"])
@@ -639,7 +826,7 @@ def create_module():
         return jsonify({"ok": False, "error": "Tipo de módulo inválido."}), 400
     doc = {"_id": module_id, "id": module_id, "name": name, "lat": lat, "lng": lng,
            "status": status, "module_type": module_type, "power": str(data.get("power", "30 W")), "connectors": connectors,
-           "city": city, "state": state_name,
+           "city": city, "state": state_name, "country": country,
            "created_by": session.get("username", "admin"), "occupied_by": None, "occupied_until": None, "created_at": now_iso()}
     try:
         modules.insert_one(doc)
@@ -672,7 +859,8 @@ def update_module(module_id):
         "name": str(data.get("name", row["name"])).strip(), "lat": lat, "lng": lng,
         "status": status, "module_type": module_type, "power": str(data.get("power", row["power"])),
         "connectors": connectors, "city": str(data.get("city", row.get("city", ""))).strip()[:80],
-        "state": str(data.get("state", row.get("state", ""))).strip()[:80], "updated_at": now_iso(),
+        "state": str(data.get("state", row.get("state", ""))).strip()[:80],
+        "country": str(data.get("country", row.get("country", ""))).strip()[:80], "updated_at": now_iso(),
     }})
     return jsonify({"ok": True, "module": module_payload(modules.find_one({"id": module_id}), True)})
 
@@ -950,10 +1138,18 @@ def bmax_purchase():
                 if not reservation:
                     raise ApiError("Tu apartado venció. Aparta un cupo nuevamente.", 409)
                 config = bmax_config.find_one({"_id": "bmax_pro"}, session=mongo_session) or {}
-                price = round(float(config.get("price_mxn", BMAX_DEFAULT_PRICE)), 2)
+                base_price = round(float(config.get("price_mxn", BMAX_DEFAULT_PRICE)), 2)
+                qr_coupon = welcome_coupon_for(live_user, "bmax_pro")
+                discount_pct = 50.0 if qr_coupon else 0.0
+                price = round(base_price * (1 - discount_pct / 100), 2)
                 if price <= 0:
                     raise ApiError("El precio de Bmax Pro todavía no está configurado.", 400)
-                debited = users.update_one({"username": user["username"], "balance": {"$gte": price}, "blocked": {"$ne": True}}, {"$inc": {"balance": -price}}, session=mongo_session)
+                user_updates = {"plan_price_mxn": price, "active_plan": "bmax_pro", "active_plan_status": "active",
+                                "active_plan_minutes": 0, "plan_purchased_at": now, "active_plan_discount_percent": discount_pct}
+                if qr_coupon:
+                    user_updates["welcome_coupon.redeemed_at"] = now
+                debited = users.update_one({"username": user["username"], "balance": {"$gte": price}, "blocked": {"$ne": True}},
+                                           {"$inc": {"balance": -price}, "$set": user_updates}, session=mongo_session)
                 if debited.modified_count != 1:
                     live = users.find_one({"username": user["username"]}, session=mongo_session) or {}
                     balance = round(float(live.get("balance") or 0), 2)
@@ -966,21 +1162,20 @@ def bmax_purchase():
                     raise ApiError("No se pudo confirmar el cupo. Inténtalo de nuevo.", 409)
                 purchase_id = next_id("bmax_purchases", mongo_session)
                 bmax_purchases.insert_one({"_id": purchase_id, "id": purchase_id, "username": user["username"], "status": "active", "price_mxn": price, "purchased_at": now, "reservation_id": reservation["_id"]}, session=mongo_session)
-                users.update_one({"username": user["username"]}, {"$set": {"active_plan": "bmax_pro", "active_plan_status": "active", "active_plan_minutes": 0, "plan_price_mxn": price, "plan_purchased_at": now, "active_plan_discount_percent": 0.0}}, session=mongo_session)
                 balance_doc = users.find_one({"username": user["username"]}, session=mongo_session)
                 balance_after = round(float(balance_doc.get("balance") or 0), 2)
                 tx_id = next_id("balance_transactions", mongo_session)
                 balance_transactions.insert_one({"_id": tx_id, "id": tx_id, "username": user["username"], "kind": "bmax_purchase", "amount": -price, "balance_after": balance_after, "description": "Compra de acceso Bmax Pro", "created_at": now_iso()}, session=mongo_session)
                 if user.get("role") != "admin":
                     revenue_id = next_id("admin_revenue_transactions", mongo_session)
-                    admin_revenue_transactions.insert_one({"_id": revenue_id, "id": revenue_id, "session_id": None, "payer_username": user["username"], "module_id": "BMAX-PRO", "module_name": "Acceso Bmax Pro", "package_name": "Bmax Pro", "gross_amount": price, "discount_amount": 0.0, "amount": price, "payment_method": "wallet", "payment_status": "paid_wallet", "collected": True, "created_at": now, "collected_at": now, "received_by": os.getenv("ADMIN_USERNAME", "tragic")}, session=mongo_session)
+                    admin_revenue_transactions.insert_one({"_id": revenue_id, "id": revenue_id, "session_id": None, "payer_username": user["username"], "module_id": "BMAX-PRO", "module_name": "Acceso Bmax Pro", "package_name": "Bmax Pro", "gross_amount": base_price, "discount_amount": max(0, round(base_price-price, 2)), "amount": price, "payment_method": "wallet", "payment_status": "paid_wallet", "collected": True, "created_at": now, "collected_at": now, "received_by": os.getenv("ADMIN_USERNAME", "tragic")}, session=mongo_session)
                     admin_account.update_one({"_id": 1}, {"$inc": {"balance": price}, "$set": {"updated_at": now}}, session=mongo_session)
     except ApiError as error:
         return jsonify({"ok": False, "error": error.message}), error.status
     except PyMongoError:
         app.logger.exception("Error confirmando compra Bmax Pro")
         return jsonify({"ok": False, "error": "No se confirmó la compra. Revisa tu saldo e inténtalo de nuevo."}), 503
-    return jsonify({"ok": True, "balance": balance_after, "bmax": bmax_status_for_user(user), "message": "Bmax Pro quedó activo en tu cuenta."})
+    return jsonify({"ok": True, "balance": balance_after, "bmax": bmax_status_for_user(current_user()), "message": "Bmax Pro quedó activo en tu cuenta."})
 
 
 @app.get("/api/admin/bmax")

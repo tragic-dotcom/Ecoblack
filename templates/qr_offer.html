@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#09070f" />
+  <title>Oferta QR · EcoBlack</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(ellipse at 50% 10%,rgba(146,83,224,.28),transparent 45%),#09070f;color:#f8f5ff;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}.card{width:min(510px,100%);padding:34px 28px;border:1px solid rgba(184,130,255,.26);border-radius:28px;background:linear-gradient(155deg,rgba(38,25,55,.96),rgba(12,10,17,.98));box-shadow:0 30px 100px rgba(0,0,0,.45),0 0 55px rgba(147,81,226,.12);text-align:center}.logo{display:inline-flex;align-items:center;gap:10px;margin-bottom:25px;font-weight:950;font-size:20px;letter-spacing:-.05em}.bolt{display:grid;place-items:center;width:40px;height:40px;border-radius:13px;background:linear-gradient(145deg,#a768ed,#452366);color:#f1dfff;font-size:27px;box-shadow:0 0 22px rgba(164,104,237,.3)}.eyebrow{font-size:10px;letter-spacing:.18em;color:#c99cff;font-weight:900}.card h1{font-size:clamp(31px,8vw,47px);line-height:1.02;letter-spacing:-.06em;margin:13px 0}.card h1 em{font-style:normal;color:#d5b4ff}.description{color:#b9b1c5;line-height:1.7;font-size:14px}.discount{margin:24px 0;padding:20px;border:1px solid rgba(182,125,255,.34);border-radius:18px;background:rgba(130,76,191,.14)}.discount strong{display:block;color:#d9bdff;font-size:48px;letter-spacing:-.06em}.prices{display:flex;justify-content:center;align-items:center;gap:12px;margin-top:4px}.prices del{color:#82788e;font-size:13px}.prices b{color:#e6ffd0;font-size:23px}.small{font-size:10px;color:#aa9eb9;margin-top:12px}.action{display:block;width:100%;margin-top:18px;padding:15px;border:1px solid rgba(188,143,255,.48);border-radius:13px;background:linear-gradient(90deg,#9254d6,#6637a2);color:white;text-decoration:none;font-weight:850}.secondary{display:block;margin-top:14px;color:#c8bdD3;font-size:12px;text-decoration:none}.eligibility{margin-top:20px;padding:12px;border-radius:12px;background:rgba(255,255,255,.05);font-size:11px;color:#c4bdcf;line-height:1.6}.invalid{color:#ffb4b4}.benefits{margin:18px 0;padding:15px 16px;border:1px solid rgba(255,255,255,.09);border-radius:14px;background:rgba(255,255,255,.035);text-align:left}.benefits>b{font-size:12px;color:#e3d2ff}.benefits ul{margin:10px 0 0;padding-left:19px;color:#bdb5c9;font-size:11px;line-height:1.8}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo"><span class="bolt">ϟ</span><span>Eco<span style="color:#bdff75">Black</span></span></div>
+    {% if not valid %}
+      <p class="eyebrow">CÓDIGO NO DISPONIBLE</p><h1 class="invalid">Este QR ya no funciona.</h1><p class="description">Regresa a EcoBlack y solicita un código nuevo.</p><a class="action" href="{{ home_url or '/' }}">Ir a EcoBlack</a>
+    {% else %}
+      <p class="eyebrow">RECOMPENSA POR ESCANEAR</p>
+      {% if eligible %}
+        <h1>¡Gracias por <em>escanear!</em></h1>
+        <p class="description">¡Gracias por escanear! Al crear tu primera cuenta EcoBlack recibirás <b>50% de descuento</b> en <b>{{ package.name }}</b>.</p>
+        <div class="discount"><strong>50% OFF</strong><div class="prices"><del>${{ '%.2f'|format(base_price) }} MXN</del><b>${{ '%.2f'|format(discounted_price) }} MXN</b></div><div class="small">VÁLIDO SOLO PARA CUENTAS NUEVAS · ESTE PAQUETE</div>{% if package.id == 'custom' %}<div class="small">Precio mostrado con 25 minutos iniciales; el total se ajusta a la duración que elijas.</div>{% endif %}</div>
+        <div class="benefits"><b>¿Qué incluye {{ package.name }}?</b><ul>
+          {% if package.id == 'bmax_pro' %}
+            <li>Acceso permanente a módulos Bmax negros y morados.</li><li>Sesiones sin límite fijo, con objetivo estimado hasta 100%.</li><li>Potencia máxima de paquete de 100 W, limitada por el dispositivo.</li>
+          {% elif package.id == 'custom' %}
+            <li>Duración personalizable de 10 a 120 minutos.</li><li>Potencia máxima estimada de {{ package.max_watts }} W.</li><li>La duración y precio se ajustan a lo que elijas.</li>
+          {% else %}
+            <li>{{ package.minutes }} minutos de sesión.</li><li>Potencia máxima estimada de {{ package.max_watts }} W.</li><li>Uso de módulos normales compatibles con el paquete.</li>
+          {% endif %}
+        </ul></div>
+        <p class="description">El beneficio queda ligado a tu cuenta y solo se puede usar una vez, al comprar este mismo paquete.</p>
+        <a class="action" href="{{ home_url }}/?crear-cuenta=1">Crear cuenta y reclamar 50% ↗</a>
+        <a class="secondary" href="{{ home_url }}">Primero quiero conocer EcoBlack</a>
+        <div class="eligibility">El cupón se asigna al crear una cuenta nueva desde este enlace. Iniciar sesión con una cuenta existente no activa el descuento.</div>
+      {% else %}
+        <h1>¡Gracias por tu interés!</h1>
+        <p class="description">El QR de <b>{{ package.name }}</b> ofrece 50% a personas que crean su primera cuenta EcoBlack. Esta sesión ya tiene una cuenta iniciada, así que no puede reclamar la promoción.</p>
+        <div class="discount"><strong>50% OFF</strong><div class="small">PROMOCIÓN EXCLUSIVA PARA CUENTAS NUEVAS</div></div>
+        <a class="action" href="{{ home_url }}">Continuar a EcoBlack</a>
+        <div class="eligibility">No se ha aplicado ningún descuento a tu cuenta actual.</div>
+      {% endif %}
+    {% endif %}
+  </main>
+</body>
+</html>

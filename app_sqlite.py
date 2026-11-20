@@ -3,14 +3,24 @@ from pathlib import Path
 import sqlite3
 import time
 import uuid
+import os
+import json
+import secrets
+import base64
+import io
+import ipaddress
+from urllib.parse import urlsplit
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
+import qrcode
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / 'ecoblack.db'
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'change-this-ecoblack-secret-before-deployment'
 app.config['MAX_CONTENT_LENGTH'] = 3 * 1024 * 1024
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 WELCOME_BALANCE = 100.0
 BMAX_DEFAULT_SLOTS = 10
 BMAX_DEFAULT_PRICE = 99.0
@@ -79,10 +89,15 @@ def bmax_status_for_user(user, conn=None):
     total = int(config['total_slots']) if config else BMAX_DEFAULT_SLOTS
     sold = int(config['sold_count']) if config else 0
     reserved = int(config['reserved_count']) if config else 0
+    coupon = (user or {}).get('welcome_coupon') or {}
+    coupon_valid = coupon.get('package_id') == 'bmax_pro' and not coupon.get('redeemed_at')
+    base_price = round(float(config['price_mxn']), 2) if config else BMAX_DEFAULT_PRICE
+    discount_percent = 50.0 if coupon_valid else 0.0
+    final_price = round(base_price * (1 - discount_percent / 100), 2)
     result = {
         'package_id': 'bmax_pro', 'name': 'Bmax Pro', 'total_slots': total, 'sold_count': sold,
         'reserved_count': reserved, 'available_slots': max(0, total-sold-reserved),
-        'price_mxn': round(float(config['price_mxn']), 2) if config else BMAX_DEFAULT_PRICE,
+        'price_mxn': final_price, 'base_price_mxn': base_price, 'discount_percent': discount_percent,
         'has_purchased': bool(purchase),
         'purchase': {'purchased_at': purchase['purchased_at'], 'price_mxn': purchase['price_mxn']} if purchase else None,
         'reservation': {'id': reservation['id'], 'expires_at': reservation['expires_at'], 'created_at': reservation['created_at']} if reservation else None,
@@ -156,6 +171,10 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'active', price_mxn REAL NOT NULL, purchased_at REAL NOT NULL,
             reservation_id TEXT
         );
+        CREATE TABLE IF NOT EXISTS package_qr_campaigns (
+            package_id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL
+        );
     ''')
     conn.execute("INSERT OR IGNORE INTO admin_account(id,owner_username,balance,updated_at) VALUES(1,'tragic',0,?)", (time.time(),))
     conn.execute("INSERT OR IGNORE INTO bmax_config(id,total_slots,reserved_count,sold_count,price_mxn,updated_at) VALUES(1,?,?,?, ?,?)", (BMAX_DEFAULT_SLOTS, 0, 0, BMAX_DEFAULT_PRICE, time.time()))
@@ -192,13 +211,19 @@ def init_db():
     add_column(conn, 'users', 'active_plan_discount_percent', 'REAL NOT NULL DEFAULT 0')
     add_column(conn, 'users', 'plan_consumed_at', 'REAL')
     add_column(conn, 'users', 'admin_service_theme', "TEXT NOT NULL DEFAULT 'wine'")
+    add_column(conn, 'users', 'welcome_coupon_json', 'TEXT')
+
+    for package_id in PACKAGES:
+        conn.execute('INSERT OR IGNORE INTO package_qr_campaigns(package_id,token,active,created_at) VALUES(?,?,1,?)',
+                     (package_id, secrets.token_urlsafe(24), time.time()))
 
     add_column(conn, 'modules', 'city', 'TEXT')
     add_column(conn, 'modules', 'state', 'TEXT')
-    # Backfill city/state for the four built-in locations from older local databases.
+    add_column(conn, 'modules', 'country', "TEXT NOT NULL DEFAULT ''")
+    # Backfill city/state/country for the four built-in locations from older local databases.
     for module in DEFAULT_MODULES:
         conn.execute(
-            "UPDATE modules SET city=COALESCE(NULLIF(city,''),'Cancún'), state=COALESCE(NULLIF(state,''),'Quintana Roo') WHERE id=?",
+            "UPDATE modules SET city=COALESCE(NULLIF(city,''),'Cancún'), state=COALESCE(NULLIF(state,''),'Quintana Roo'), country=COALESCE(NULLIF(country,''),'México') WHERE id=?",
             (module[0],),
         )
 
@@ -243,8 +268,8 @@ def init_db():
         conn.execute('UPDATE admin_account SET balance=ROUND(balance+?,2),updated_at=? WHERE id=1', (amount, time.time()))
 
     if conn.execute('SELECT COUNT(*) FROM modules').fetchone()[0] == 0:
-        conn.executemany('''INSERT INTO modules(id,name,lat,lng,status,power,connectors,created_by,city,state)
-                            VALUES(?,?,?,?,?,?,?,?,?,?)''', [(*module, 'system', 'Cancún', 'Quintana Roo') for module in DEFAULT_MODULES])
+        conn.executemany('''INSERT INTO modules(id,name,lat,lng,status,power,connectors,created_by,city,state,country)
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?)''', [(*module, 'system', 'Cancún', 'Quintana Roo', 'México') for module in DEFAULT_MODULES])
     conn.commit()
     conn.close()
 
@@ -264,6 +289,16 @@ def user_public(row):
     if not row:
         return None
     result = dict(row)
+    raw_coupon = result.pop('welcome_coupon_json', None)
+    try:
+        coupon = json.loads(raw_coupon) if raw_coupon else None
+    except (TypeError, ValueError):
+        coupon = None
+    result['welcome_coupon'] = ({
+        'package_id': coupon.get('package_id'),
+        'discount_percent': float(coupon.get('discount_percent') or 50),
+        'claimed_at': coupon.get('claimed_at'), 'redeemed_at': coupon.get('redeemed_at'),
+    } if isinstance(coupon, dict) else None)
     result['balance'] = round(float(result.get('balance') or 0), 2)
     result['discount_percent'] = round(float(result.get('discount_percent') or 0), 2)
     result['blocked'] = bool(result.get('blocked', 0))
@@ -277,7 +312,7 @@ def current_user():
     conn = db()
     row = conn.execute('''SELECT id,username,role,usage,balance,discount_percent,blocked,avatar_data,
                           display_name,created_at,active_plan,active_plan_status,active_plan_minutes,
-                          plan_price_mxn,plan_purchased_at,active_plan_discount_percent,admin_service_theme FROM users WHERE username=?''', (username,)).fetchone()
+                          plan_price_mxn,plan_purchased_at,active_plan_discount_percent,admin_service_theme,welcome_coupon_json FROM users WHERE username=?''', (username,)).fetchone()
     conn.close()
     if not row or (row['blocked'] and row['role'] != 'admin'):
         session.clear()
@@ -312,6 +347,7 @@ def module_payload(row, admin=False):
     item['module_type'] = item.get('module_type') if item.get('module_type') in ('standard', 'bmax') else 'standard'
     item['city'] = str(item.get('city') or '').strip()
     item['state'] = str(item.get('state') or '').strip()
+    item['country'] = str(item.get('country') or '').strip()
     item['remaining_seconds'] = max(0, int(item['occupied_until'] - time.time())) if item.get('occupied_until') else 0
     if not admin:
         item.pop('occupied_by', None)
@@ -405,12 +441,115 @@ def calculate_price(package_id, minutes, discount_percent):
     return duration, round(base, 2), discount, final_price
 
 
+def welcome_coupon_for(user, package_id=None):
+    coupon = (user or {}).get('welcome_coupon') or {}
+    if not isinstance(coupon, dict) or coupon.get('redeemed_at'):
+        return None
+    if package_id and coupon.get('package_id') != package_id:
+        return None
+    if coupon.get('package_id') not in PACKAGES:
+        return None
+    return coupon
+
+
+def public_base_url(require_public=False):
+    configured = os.getenv('APP_BASE_URL', '').strip().rstrip('/')
+    if configured:
+        base = configured
+    else:
+        scheme = request.headers.get('X-Forwarded-Proto', request.scheme).split(',', 1)[0].strip()
+        host = request.headers.get('X-Forwarded-Host', request.host).split(',', 1)[0].strip()
+        base = f'{scheme}://{host}'
+    if require_public:
+        parsed = urlsplit(base)
+        hostname = (parsed.hostname or '').lower()
+        try:
+            is_loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = hostname == 'localhost' or hostname.endswith('.localhost')
+        if parsed.scheme != 'https' or not hostname or is_loopback:
+            raise ValueError('El QR necesita una URL pública HTTPS. Configura APP_BASE_URL con tu dominio de Render.')
+    return base
+
+
 @app.get('/')
 def home():
     return render_template('index.html')
 
 
+@app.get('/qr/<token>')
+def package_qr_landing(token):
+    conn = db()
+    campaign = conn.execute('SELECT * FROM package_qr_campaigns WHERE token=? AND active=1', (token,)).fetchone()
+    conn.close()
+    if not campaign or campaign['package_id'] not in PACKAGES:
+        return render_template('qr_offer.html', valid=False, package=None, eligible=False), 404
+    user = current_user(); eligible = not bool(user) and not bool(session.get('device_has_account'))
+    if eligible:
+        session['qr_offer_token'] = token
+        session.permanent = True
+    else: session.pop('qr_offer_token', None)
+    package = PACKAGES[campaign['package_id']]
+    if package['id'] == 'bmax_pro':
+        conn = db(); config = conn.execute('SELECT price_mxn FROM bmax_config WHERE id=1').fetchone(); conn.close()
+        base_price = round(float(config['price_mxn']), 2) if config else BMAX_DEFAULT_PRICE
+    else:
+        _, base_price, _, _ = calculate_price(package['id'], package['minutes'], 0)
+    return render_template('qr_offer.html', valid=True, package=package, eligible=eligible,
+                           base_price=base_price, discounted_price=round(base_price * .5, 2),
+                           home_url=public_base_url())
+
+
+@app.get('/api/qr/offer')
+def get_qr_offer():
+    if current_user() or session.get('device_has_account'): return jsonify({'eligible': False, 'reason': 'account_exists'})
+    token = session.get('qr_offer_token'); conn = db()
+    campaign = conn.execute('SELECT * FROM package_qr_campaigns WHERE token=? AND active=1', (token,)).fetchone() if token else None
+    conn.close()
+    if not campaign or campaign['package_id'] not in PACKAGES: return jsonify({'eligible': False})
+    package_id = campaign['package_id']; package = PACKAGES[package_id]
+    if package_id == 'bmax_pro':
+        conn = db(); config = conn.execute('SELECT price_mxn FROM bmax_config WHERE id=1').fetchone(); conn.close()
+        base_price = round(float(config['price_mxn']), 2) if config else BMAX_DEFAULT_PRICE
+    else:
+        _, base_price, _, _ = calculate_price(package_id, package['minutes'], 0)
+    return jsonify({'eligible': True, 'package_id': package_id, 'package_name': package['name'],
+                    'discount_percent': 50, 'base_price_mxn': base_price,
+                    'discounted_price_mxn': round(base_price * .5, 2)})
+
+
+@app.get('/api/public/packages')
+def public_packages():
+    conn = db(); config = conn.execute('SELECT * FROM bmax_config WHERE id=1').fetchone(); conn.close()
+    items = []
+    for package in PACKAGES.values():
+        if package['id'] == 'bmax_pro': price = round(float(config['price_mxn']), 2) if config else BMAX_DEFAULT_PRICE
+        else: _, price, _, _ = calculate_price(package['id'], package['minutes'], 0)
+        items.append({'id': package['id'], 'name': package['name'], 'description': package['description'],
+                      'minutes': package['minutes'], 'max_watts': package['max_watts'], 'price_mxn': price,
+                      'limited': package['id'] == 'bmax_pro'})
+    return jsonify({'packages': items, 'bmax': bmax_status_for_user(None)})
+
+
+@app.get('/api/qr/package/<package_id>')
+def package_qr_image(package_id):
+    if package_id not in PACKAGES: return jsonify({'ok': False, 'error': 'Paquete no encontrado.'}), 404
+    conn = db(); campaign = conn.execute('SELECT * FROM package_qr_campaigns WHERE package_id=? AND active=1', (package_id,)).fetchone(); conn.close()
+    if not campaign: return jsonify({'ok': False, 'error': 'El QR de este paquete no está disponible.'}), 503
+    try:
+        target_url = f"{public_base_url(require_public=True)}/qr/{campaign['token']}"
+    except ValueError as error:
+        return jsonify({'ok': False, 'error': str(error)}), 503
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=9, border=3)
+    qr.add_data(target_url); qr.make(fit=True)
+    image = qr.make_image(fill_color='#14111b', back_color='#ffffff')
+    output = io.BytesIO(); image.save(output, format='PNG')
+    data_url = 'data:image/png;base64,' + base64.b64encode(output.getvalue()).decode('ascii')
+    return jsonify({'ok': True, 'package_id': package_id, 'url': target_url, 'image': data_url})
+
+
 @app.get('/api/modules')
+@login_required
 def get_modules():
     conn = db(); release_expired_modules(conn); conn.commit()
     rows = conn.execute('SELECT * FROM modules ORDER BY name').fetchall()
@@ -430,8 +569,15 @@ def get_packages():
     for package in PACKAGES.values():
         if package['id'] == 'bmax_pro' and not bmax['has_purchased']:
             continue
-        minutes, base, discount, final = calculate_price(package['id'], package['minutes'], user['discount_percent'])
-        packages.append({**package, 'minutes': minutes, 'base_price': base, 'discount_percent': discount, 'final_price': final, 'purchased': package['id'] == 'bmax_pro'})
+        qr_coupon = welcome_coupon_for(user, package['id'])
+        discount_rate = 50.0 if qr_coupon else user['discount_percent']
+        minutes, base, discount, final = calculate_price(package['id'], package['minutes'], discount_rate)
+        if package['id'] == 'bmax_pro':
+            base = bmax.get('base_price_mxn', bmax.get('price_mxn', BMAX_DEFAULT_PRICE))
+            discount = bmax.get('discount_percent', 0)
+            final = bmax.get('price_mxn', base)
+        packages.append({**package, 'minutes': minutes, 'base_price': base, 'discount_percent': discount,
+                         'final_price': final, 'qr_coupon_applied': bool(qr_coupon), 'purchased': package['id'] == 'bmax_pro'})
     active_package = PACKAGES.get(active_plan_id) if active_plan_id else None
     current_plan = None
     if active_package:
@@ -442,7 +588,8 @@ def get_packages():
                         'permanent': active_plan_id == 'bmax_pro',
                         'price_mxn': round(float(user.get('plan_price_mxn') or (bmax.get('purchase') or {}).get('price_mxn') or 0), 2)}
     conn.close()
-    return jsonify({'packages': packages, 'balance': user['balance'], 'discount_percent': user['discount_percent'], 'bmax': bmax, 'current_plan': current_plan})
+    return jsonify({'packages': packages, 'balance': user['balance'], 'discount_percent': user['discount_percent'],
+                    'welcome_coupon': welcome_coupon_for(user), 'bmax': bmax, 'current_plan': current_plan})
 
 
 @app.post('/api/plans/purchase')
@@ -452,16 +599,21 @@ def purchase_plan():
     package_id = str(data.get('package_id', '')).strip()
     if package_id not in PACKAGES or package_id == 'bmax_pro':
         return jsonify({'ok': False, 'error': 'Selecciona un plan estándar válido. Bmax Pro se compra desde su apartado limitado.'}), 400
-    try:
-        requested_minutes = data.get('minutes', PACKAGES[package_id]['minutes'])
-        minutes, base, discount_pct, price = calculate_price(package_id, requested_minutes, float(user.get('discount_percent') or 0))
-    except (ValueError, TypeError):
-        return jsonify({'ok': False, 'error': 'La duración del plan no es válida.'}), 400
-    if price <= 0: return jsonify({'ok': False, 'error': 'El precio del plan no es válido.'}), 400
     conn = db(); conn.execute('BEGIN IMMEDIATE'); now = time.time()
     live = conn.execute('SELECT * FROM users WHERE username=?', (user['username'],)).fetchone()
     if not live or live['blocked']:
         conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': 'Tu cuenta no puede comprar planes.'}), 403
+    try:
+        requested_minutes = data.get('minutes', PACKAGES[package_id]['minutes'])
+        try: live_coupon = json.loads(live['welcome_coupon_json']) if live['welcome_coupon_json'] else None
+        except (TypeError, ValueError): live_coupon = None
+        qr_coupon = isinstance(live_coupon, dict) and live_coupon.get('package_id') == package_id and not live_coupon.get('redeemed_at')
+        discount_rate = 50.0 if qr_coupon else float(live['discount_percent'] or 0)
+        minutes, base, discount_pct, price = calculate_price(package_id, requested_minutes, discount_rate)
+    except (ValueError, TypeError):
+        conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': 'La duración del plan no es válida.'}), 400
+    if price <= 0:
+        conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': 'El precio del plan no es válido.'}), 400
     if live['role'] != 'admin':
         if live['active_plan']:
             conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': 'Ya tienes un plan activo. Úsalo antes de comprar otro.'}), 409
@@ -470,10 +622,17 @@ def purchase_plan():
         if float(live['balance'] or 0) < price:
             balance = float(live['balance'] or 0); conn.rollback(); conn.close()
             return jsonify({'ok': False, 'error': f'Saldo insuficiente. Tienes ${balance:.2f} y {PACKAGES[package_id]["name"]} cuesta ${price:.2f}.'}), 402
-        conn.execute('''UPDATE users SET balance=ROUND(balance-?,2),active_plan=?,active_plan_status='ready',
-                        active_plan_minutes=?,plan_price_mxn=?,plan_purchased_at=?,active_plan_discount_percent=?
-                        WHERE username=? AND balance>=? AND active_plan IS NULL''',
-                     (price, package_id, minutes, price, now, discount_pct, user['username'], price))
+        if qr_coupon:
+            live_coupon['redeemed_at'] = now
+            conn.execute('''UPDATE users SET balance=ROUND(balance-?,2),active_plan=?,active_plan_status='ready',
+                            active_plan_minutes=?,plan_price_mxn=?,plan_purchased_at=?,active_plan_discount_percent=?,welcome_coupon_json=?
+                            WHERE username=? AND balance>=? AND active_plan IS NULL''',
+                         (price, package_id, minutes, price, now, discount_pct, json.dumps(live_coupon), user['username'], price))
+        else:
+            conn.execute('''UPDATE users SET balance=ROUND(balance-?,2),active_plan=?,active_plan_status='ready',
+                            active_plan_minutes=?,plan_price_mxn=?,plan_purchased_at=?,active_plan_discount_percent=?
+                            WHERE username=? AND balance>=? AND active_plan IS NULL''',
+                         (price, package_id, minutes, price, now, discount_pct, user['username'], price))
         if conn.execute('SELECT changes()').fetchone()[0] != 1:
             conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': 'No se pudo reservar este plan; actualiza tu cuenta.'}), 409
         balance_after = float(conn.execute('SELECT balance FROM users WHERE username=?', (user['username'],)).fetchone()['balance'] or 0)
@@ -512,12 +671,15 @@ def auth_login():
         return jsonify({'ok': False, 'error': 'Usuario o contraseña incorrectos.'}), 401
     if user['blocked'] and user['role'] != 'admin':
         return jsonify({'ok': False, 'error': 'Tu cuenta está bloqueada. Contacta al administrador.'}), 403
-    session['username'] = username
+    session.pop('qr_offer_token', None); session['device_has_account'] = True
+    session['username'] = username; session.permanent = True
     return jsonify({'ok': True, 'user': current_user()})
 
 
 @app.post('/api/auth/register')
 def auth_register():
+    if session.get('username') and current_user():
+        return jsonify({'ok': False, 'error': 'Cierra la sesión actual antes de crear otra cuenta.'}), 409
     data = request.get_json(silent=True) or {}
     username = str(data.get('username', '')).strip().lower()
     password = str(data.get('password', ''))
@@ -528,24 +690,37 @@ def auth_register():
         return jsonify({'ok': False, 'error': 'La contraseña debe tener al menos 4 caracteres.'}), 400
     if not usage:
         return jsonify({'ok': False, 'error': 'Selecciona dónde usarás EcoBlack.'}), 400
+    offer_token = session.get('qr_offer_token')
     conn = db()
+    campaign = conn.execute('SELECT * FROM package_qr_campaigns WHERE token=? AND active=1', (offer_token,)).fetchone() if offer_token and not session.get('device_has_account') else None
+    if offer_token and not campaign:
+        conn.close(); session.pop('qr_offer_token', None)
+        return jsonify({'ok': False, 'error': 'El QR ya no está disponible. Puedes crear tu cuenta sin el descuento.'}), 410
+    welcome_coupon = None
+    if campaign and campaign['package_id'] in PACKAGES:
+        welcome_coupon = {'package_id': campaign['package_id'], 'discount_percent': 50.0,
+                          'campaign_token': offer_token, 'claimed_at': time.time(), 'redeemed_at': None}
     try:
-        conn.execute('''INSERT INTO users(username,password_hash,role,usage,balance,discount_percent,blocked,display_name)
-                        VALUES(?,?,?,?,?,?,?,?)''',
-                     (username, generate_password_hash(password), 'user', usage, WELCOME_BALANCE, 0, 0, username))
+        conn.execute('''INSERT INTO users(username,password_hash,role,usage,balance,discount_percent,blocked,display_name,welcome_coupon_json)
+                        VALUES(?,?,?,?,?,?,?,?,?)''',
+                     (username, generate_password_hash(password), 'user', usage, WELCOME_BALANCE, 0, 0, username,
+                      json.dumps(welcome_coupon) if welcome_coupon else None))
         conn.execute('''INSERT INTO balance_transactions(username,kind,amount,balance_after,description)
                         VALUES(?,?,?,?,?)''',
                      (username, 'welcome', WELCOME_BALANCE, WELCOME_BALANCE, 'Saldo de bienvenida de EcoBlack'))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close(); return jsonify({'ok': False, 'error': 'Ese usuario ya existe.'}), 409
-    conn.close(); session['username'] = username
-    return jsonify({'ok': True, 'user': current_user()})
+    conn.close(); session['username'] = username; session.pop('qr_offer_token', None); session['device_has_account'] = True; session.permanent = True
+    public_coupon = {key: value for key, value in welcome_coupon.items() if key != 'campaign_token'} if welcome_coupon else None
+    return jsonify({'ok': True, 'user': current_user(), 'welcome_coupon': public_coupon})
 
 
 @app.post('/api/auth/logout')
 def auth_logout():
     session.clear()
+    session['device_has_account'] = True
+    session.permanent = True
     return jsonify({'ok': True})
 
 
@@ -611,7 +786,7 @@ def profile_transactions():
 @admin_required
 def create_module():
     data = request.get_json(silent=True) or {}; name = str(data.get('name', '')).strip()
-    city = str(data.get('city', '')).strip()[:80]; state_name = str(data.get('state', '')).strip()[:80]
+    city = str(data.get('city', '')).strip()[:80]; state_name = str(data.get('state', '')).strip()[:80]; country = str(data.get('country', '')).strip()[:80]
     lat_raw, lng_raw = data.get('lat'), data.get('lng')
     if lat_raw is None or lng_raw is None or str(lat_raw).strip() == '' or str(lng_raw).strip() == '':
         return jsonify({'ok': False, 'error': 'Selecciona la ubicación del módulo en el mapa o escribe latitud y longitud.'}), 400
@@ -619,8 +794,8 @@ def create_module():
         lat, lng = float(lat_raw), float(lng_raw)
     except (TypeError, ValueError):
         return jsonify({'ok': False, 'error': 'Latitud y longitud deben ser números válidos.'}), 400
-    if not name or not city or not state_name or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
-        return jsonify({'ok': False, 'error': 'Completa nombre, ciudad, estado y coordenadas dentro de los rangos válidos.'}), 400
+    if not name or not city or not state_name or not country or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+        return jsonify({'ok': False, 'error': 'Completa nombre, ciudad, estado, país y coordenadas dentro de los rangos válidos.'}), 400
     if abs(lat) < 1e-9 and abs(lng) < 1e-9:
         return jsonify({'ok': False, 'error': 'La ubicación 0, 0 no es válida para este módulo. Elige un punto real en el mapa.'}), 400
     connectors = data.get('connectors', ['USB-C'])
@@ -634,10 +809,10 @@ def create_module():
     module_type = str(data.get('module_type', 'standard')).strip().lower()
     if module_type not in ('standard', 'bmax'):
         conn.close(); return jsonify({'ok': False, 'error': 'Tipo de módulo inválido.'}), 400
-    conn.execute('''INSERT INTO modules(id,name,lat,lng,status,power,connectors,created_by,module_type,city,state)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+    conn.execute('''INSERT INTO modules(id,name,lat,lng,status,power,connectors,created_by,module_type,city,state,country)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
                  (module_id, name, lat, lng, status, data.get('power', '30 W'), connector_text, session.get('username', 'admin'), module_type,
-                  city, state_name))
+                  city, state_name, country))
     conn.commit(); row = conn.execute('SELECT * FROM modules WHERE id=?', (module_id,)).fetchone(); conn.close()
     return jsonify({'ok': True, 'module': module_payload(row, True)}), 201
 
@@ -659,9 +834,9 @@ def update_module(module_id):
     module_type = str(data.get('module_type', row['module_type'] or 'standard')).strip().lower()
     if module_type not in ('standard', 'bmax'):
         conn.close(); return jsonify({'ok': False, 'error': 'Tipo de módulo inválido.'}), 400
-    conn.execute('''UPDATE modules SET name=?,lat=?,lng=?,status=?,power=?,connectors=?,module_type=?,city=?,state=? WHERE id=?''',
+    conn.execute('''UPDATE modules SET name=?,lat=?,lng=?,status=?,power=?,connectors=?,module_type=?,city=?,state=?,country=? WHERE id=?''',
                  (str(data.get('name', row['name'])).strip(), lat, lng, status, str(data.get('power', row['power'])), connectors, module_type,
-                  str(data.get('city', row['city'] or '')).strip()[:80], str(data.get('state', row['state'] or '')).strip()[:80], module_id))
+                  str(data.get('city', row['city'] or '')).strip()[:80], str(data.get('state', row['state'] or '')).strip()[:80], str(data.get('country', row['country'] or '')).strip()[:80], module_id))
     conn.commit(); updated = conn.execute('SELECT * FROM modules WHERE id=?', (module_id,)).fetchone(); conn.close()
     return jsonify({'ok': True, 'module': module_payload(updated, True)})
 
@@ -904,8 +1079,13 @@ def bmax_purchase():
     if not reservation:
         conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': 'Tu apartado venció. Aparta un cupo nuevamente.'}), 409
     config = conn.execute('SELECT * FROM bmax_config WHERE id=1').fetchone()
-    price = round(float(config['price_mxn'] if config else BMAX_DEFAULT_PRICE), 2)
-    live_user = conn.execute('SELECT balance FROM users WHERE username=?', (user['username'],)).fetchone()
+    base_price = round(float(config['price_mxn'] if config else BMAX_DEFAULT_PRICE), 2)
+    live_user = conn.execute('SELECT * FROM users WHERE username=?', (user['username'],)).fetchone()
+    try: live_coupon = json.loads(live_user['welcome_coupon_json']) if live_user and live_user['welcome_coupon_json'] else None
+    except (TypeError, ValueError): live_coupon = None
+    qr_coupon = isinstance(live_coupon, dict) and live_coupon.get('package_id') == 'bmax_pro' and not live_coupon.get('redeemed_at')
+    discount_pct = 50.0 if qr_coupon else 0.0
+    price = round(base_price * (1 - discount_pct / 100), 2)
     balance = float(live_user['balance'] or 0) if live_user else 0.0
     if balance < price:
         conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': f'Saldo insuficiente. Tienes ${balance:.2f} y Bmax Pro cuesta ${price:.2f}.'}), 402
@@ -915,15 +1095,21 @@ def bmax_purchase():
         conn.rollback(); conn.close(); return jsonify({'ok': False, 'error': 'Tu apartado venció. Aparta un cupo nuevamente.'}), 409
     conn.execute('UPDATE bmax_config SET reserved_count=MAX(0,reserved_count-1),sold_count=sold_count+1,updated_at=? WHERE id=1', (now,))
     conn.execute("INSERT INTO bmax_purchases(username,status,price_mxn,purchased_at,reservation_id) VALUES(?,'active',?,?,?)", (user['username'], price, now, reservation['id']))
-    conn.execute("UPDATE users SET active_plan='bmax_pro',active_plan_status='active',active_plan_minutes=0,plan_price_mxn=?,plan_purchased_at=?,active_plan_discount_percent=0 WHERE username=?", (price, now, user['username']))
+    if qr_coupon:
+        live_coupon['redeemed_at'] = now
+        conn.execute("UPDATE users SET active_plan='bmax_pro',active_plan_status='active',active_plan_minutes=0,plan_price_mxn=?,plan_purchased_at=?,active_plan_discount_percent=?,welcome_coupon_json=? WHERE username=?",
+                     (price, now, discount_pct, json.dumps(live_coupon), user['username']))
+    else:
+        conn.execute("UPDATE users SET active_plan='bmax_pro',active_plan_status='active',active_plan_minutes=0,plan_price_mxn=?,plan_purchased_at=?,active_plan_discount_percent=? WHERE username=?",
+                     (price, now, discount_pct, user['username']))
     balance_after = float(conn.execute('SELECT balance FROM users WHERE username=?', (user['username'],)).fetchone()['balance'] or 0)
     conn.execute("INSERT INTO balance_transactions(username,kind,amount,balance_after,description) VALUES(?,?,?,?,?)", (user['username'], 'bmax_purchase', -price, balance_after, 'Compra de acceso Bmax Pro'))
     if user['role'] != 'admin':
         conn.execute('''INSERT INTO admin_revenue_transactions(session_id,payer_username,module_id,module_name,package_name,gross_amount,discount_amount,amount,payment_method,payment_status,collected,created_at,collected_at,received_by)
                         VALUES(NULL,?,?,?,?,?,?,?,?,?,1,?,?,?)''',
-                     (user['username'], 'BMAX-PRO', 'Acceso Bmax Pro', 'Bmax Pro', price, 0, price, 'wallet', 'paid_wallet', now, now, 'tragic'))
+                     (user['username'], 'BMAX-PRO', 'Acceso Bmax Pro', 'Bmax Pro', base_price, max(0, round(base_price-price, 2)), price, 'wallet', 'paid_wallet', now, now, 'tragic'))
         conn.execute('UPDATE admin_account SET balance=ROUND(balance+?,2),updated_at=? WHERE id=1', (price, now))
-    conn.commit(); result = bmax_status_for_user(user, conn); conn.close()
+    conn.commit(); fresh_user = user_public(conn.execute('SELECT * FROM users WHERE username=?', (user['username'],)).fetchone()); result = bmax_status_for_user(fresh_user, conn); conn.close()
     return jsonify({'ok': True, 'balance': round(balance_after,2), 'bmax': result, 'message': 'Bmax Pro quedó activo en tu cuenta.'})
 
 

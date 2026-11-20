@@ -77,6 +77,7 @@ def main():
                         document["role"] = "admin"
                         document["blocked"] = False
                 elif table == "modules":
+                    document.setdefault("country", "")
                     document.setdefault("occupied_by", None)
                     document.setdefault("occupied_until", None)
                     connector_value = document.get("connectors") or "USB-C"

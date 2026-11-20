@@ -1,4 +1,4 @@
-const CACHE = 'ecoblack-deploy-v17-map-admin-themes';
+const CACHE = 'ecoblack-deploy-v20-pro-globe-geo-cursor';
 const APP_SHELL = [
   '/',
   '/static/css/style.css',
